@@ -354,11 +354,18 @@ class VideoPoseLabellerApp:
         info_frame.columnconfigure(0, weight=1)
 
         ttk.Label(
-            info_frame, textvariable=self.current_state_var, anchor="w"
+            info_frame,
+            textvariable=self.current_state_var,
+            anchor="w",
+            wraplength=400,     # never forces the window wider
         ).grid(row=0, column=0, sticky="ew")
+
         ttk.Label(
-            info_frame, textvariable=self.sequence_var,
-            anchor="w", foreground="#444",
+            info_frame,
+            textvariable=self.sequence_var,
+            anchor="w",
+            foreground="#444",
+            wraplength=400,     # long sequences wrap instead of stretching
         ).grid(row=1, column=0, sticky="ew")
 
         # -- Annotation tree --
@@ -432,7 +439,11 @@ class VideoPoseLabellerApp:
 
         # ---- Status bar (always row 2, spans all columns) ----
         self.status_bar = ttk.Label(
-            self.root, textvariable=self.status_var, anchor="w", padding=6
+            self.root,
+            textvariable=self.status_var,
+            anchor="w",
+            padding=6,
+            wraplength=800,     # long status messages wrap, never widen window
         )
         self.status_bar.grid(row=2, column=0, columnspan=3, sticky="ew")
 
@@ -877,6 +888,32 @@ class VideoPoseLabellerApp:
         self._update_annotation_view()
         self._refresh_binary_label_display()
         self._update_buttons()
+
+        # Re-enforce the portrait geometry after all label content
+        # has updated — prevents variable-length text from shifting
+        # the window size.
+        if self.current_layout == "vertical":
+            self.root.after_idle(self._reapply_vertical_geometry)
+
+    def _reapply_vertical_geometry(self) -> None:
+        """Re-lock the window to the correct 9:16 portrait geometry after
+        any content change that might have nudged the window size."""
+        self.root.update_idletasks()
+        portrait_w = self.video_canvas.winfo_reqwidth()
+        portrait_h = self.video_canvas.winfo_reqheight()
+        if portrait_w < 1 or portrait_h < 1:
+            return
+        screen_h     = self.root.winfo_screenheight()
+        sidebar_w    = self.sidebar.winfo_reqwidth()
+        canvas_col_w = portrait_w + 8
+        controls_w   = 480
+        win_w        = sidebar_w + canvas_col_w + controls_w
+        status_h     = self.status_bar.winfo_reqheight()
+        win_h        = min(
+            portrait_h + status_h + 24, int(screen_h * 0.92)
+        )
+        self.root.geometry(f"{win_w}x{win_h}")
+        self._enforce_portrait_ratio(portrait_w, portrait_h)
 
     # ------------------------------------------------------------------
     # Binary label and annotation editing
