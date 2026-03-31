@@ -107,7 +107,8 @@ class VideoPoseLabellerApp:
         self.status_var = tk.StringVar(value="Select a folder to begin")
         self.frame_info_var = tk.StringVar(value="Frame: - / -")
         self.current_layout: str = "default"
-        
+        self._segment_end: int = 0          # used by _segment_play_loop
+
         # Build the UI widgets
         self._build_ui()
 
@@ -133,6 +134,7 @@ class VideoPoseLabellerApp:
         # ---- Sidebar (always column 0, row 0) ----
         self.sidebar = ttk.Frame(self.root, padding=10)
         self.sidebar.grid(row=0, column=0, sticky="ns")
+        self.sidebar.columnconfigure(0, weight=1)
 
         ttk.Button(
             self.sidebar,
@@ -153,8 +155,10 @@ class VideoPoseLabellerApp:
         ttk.Label(
             self.sidebar, text="Exercises", padding=(0, 10, 0, 0)
         ).grid(row=3, column=0, sticky="w")
+
+        # No fixed height — the listbox grows/shrinks with the window
         self.exercise_list = tk.Listbox(
-            self.sidebar, exportselection=False, height=8
+            self.sidebar, exportselection=False
         )
         self.exercise_list.grid(row=4, column=0, sticky="nsew")
         self.exercise_list.bind("<<ListboxSelect>>", self.on_exercise_select)
@@ -162,8 +166,10 @@ class VideoPoseLabellerApp:
         ttk.Label(
             self.sidebar, text="Samples", padding=(0, 10, 0, 0)
         ).grid(row=5, column=0, sticky="w")
+
+        # No fixed height — the listbox grows/shrinks with the window
         self.sample_list = tk.Listbox(
-            self.sidebar, exportselection=False, height=10
+            self.sidebar, exportselection=False
         )
         self.sample_list.grid(row=6, column=0, sticky="nsew")
         self.sample_list.bind("<Double-Button-1>", self.on_sample_double_click)
@@ -180,8 +186,9 @@ class VideoPoseLabellerApp:
             command=self.build_video_config,
         ).grid(row=8, column=0, pady=(6, 0), sticky="ew")
 
+        # Both listboxes share the available vertical space equally
         self.sidebar.rowconfigure(4, weight=1)
-        self.sidebar.rowconfigure(6, weight=2)
+        self.sidebar.rowconfigure(6, weight=1)
 
         # ---- Canvas container (always column 1, row 0) ----
         self.canvas_outer = ttk.Frame(self.root, padding=10)
@@ -227,102 +234,108 @@ class VideoPoseLabellerApp:
 
         # ---- Controls panel — permanent child of self.root.
         #      Re-gridded by layout presets; never destroyed. ----
-        self.controls_panel = ttk.Frame(self.root, padding=10)
+        self.controls_panel = ttk.Frame(self.root, padding=(6, 6))
 
-        # Zoom controls
-        zoom_row = ttk.Frame(self.controls_panel)
-        zoom_row.pack(fill=tk.X, pady=(0, 4))
+        # -- Zoom controls (wrapping row) --
+        zoom_wrap = WrapFrame(self.controls_panel, padx=2, pady=2, bg="#f0f0f0")
+        zoom_wrap.pack(fill=tk.X, pady=(0, 2))
 
-        ttk.Label(zoom_row, text="Zoom:").pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(
-            zoom_row, text="−", width=3, command=self.zoom_out
-        ).pack(side=tk.LEFT, padx=2)
+        zoom_wrap.add(ttk.Label(zoom_wrap, text="Zoom:"))
+        zoom_wrap.add(ttk.Button(zoom_wrap, text="−", width=3, command=self.zoom_out))
 
         self.zoom_slider = ttk.Scale(
-            zoom_row, from_=10, to=500, orient=tk.HORIZONTAL,
-            command=self._on_zoom_slider,
+            zoom_wrap, from_=10, to=500, orient=tk.HORIZONTAL,
+            command=self._on_zoom_slider, length=120,
         )
         self.zoom_slider.set(100)
-        self.zoom_slider.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
+        zoom_wrap.add(self.zoom_slider)
 
-        ttk.Button(
-            zoom_row, text="+", width=3, command=self.zoom_in
-        ).pack(side=tk.LEFT, padx=2)
+        zoom_wrap.add(ttk.Button(zoom_wrap, text="+", width=3, command=self.zoom_in))
 
-        self.zoom_level_label = ttk.Label(zoom_row, text="100%", width=6)
-        self.zoom_level_label.pack(side=tk.LEFT, padx=(6, 4))
+        self.zoom_level_label = ttk.Label(zoom_wrap, text="100%", width=5)
+        zoom_wrap.add(self.zoom_level_label)
 
-        ttk.Button(
-            zoom_row, text="Reset", command=self.reset_zoom
-        ).pack(side=tk.LEFT, padx=2)
-        ttk.Button(
-            zoom_row, text="Fit", command=self.fit_to_window
-        ).pack(side=tk.LEFT, padx=2)
+        zoom_wrap.add(ttk.Button(zoom_wrap, text="Reset", command=self.reset_zoom))
+        zoom_wrap.add(ttk.Button(zoom_wrap, text="Fit",   command=self.fit_to_window))
 
         for preset in (50, 100, 150, 200):
-            ttk.Button(
-                zoom_row, text=f"{preset}%", width=5,
-                command=lambda p=preset: self.set_zoom_percent(p),
-            ).pack(side=tk.LEFT, padx=1)
+            zoom_wrap.add(
+                ttk.Button(
+                    zoom_wrap, text=f"{preset}%", width=4,
+                    command=lambda p=preset: self.set_zoom_percent(p),
+                )
+            )
 
-        # Playback controls
-        controls = ttk.Frame(self.controls_panel)
-        controls.pack(fill=tk.X, pady=(0, 8))
-        controls.columnconfigure(4, weight=1)
+        # -- Playback + annotation controls (wrapping row) --
+        ctrl_wrap = WrapFrame(self.controls_panel, padx=2, pady=2, bg="#f0f0f0")
+        ctrl_wrap.pack(fill=tk.X, pady=(0, 2))
 
         self.play_button = ttk.Button(
-            controls, text="Play", command=self.toggle_play
+            ctrl_wrap, text="▶", width=3, command=self.toggle_play
         )
-        self.play_button.grid(row=0, column=0, padx=2)
+        ctrl_wrap.add(self.play_button)
 
-        ttk.Button(
-            controls, text="⟨ Frame", command=lambda: self.step_frame(-1)
-        ).grid(row=0, column=1, padx=2)
-        ttk.Button(
-            controls, text="Frame ⟩", command=lambda: self.step_frame(1)
-        ).grid(row=0, column=2, padx=2)
+        ctrl_wrap.add(
+            ttk.Button(ctrl_wrap, text="⏮", width=3,
+                       command=lambda: self.step_frame(-1))
+        )
+        ctrl_wrap.add(
+            ttk.Button(ctrl_wrap, text="⏭", width=3,
+                       command=lambda: self.step_frame(1))
+        )
 
         self.mark_button = ttk.Button(
-            controls, text="Mark end of current state",
+            ctrl_wrap, text="Mark end of state",
             command=self.mark_current_state,
         )
-        self.mark_button.grid(row=0, column=3, padx=8)
+        ctrl_wrap.add(self.mark_button)
 
         self.mark_prep_button = ttk.Button(
-            controls, text="Mark as prep",
+            ctrl_wrap, text="Mark as prep",
             command=lambda: self.mark_manual_segment("prep"),
         )
         self.mark_rep_button = ttk.Button(
-            controls, text="Mark as rep",
+            ctrl_wrap, text="Mark as rep",
             command=lambda: self.mark_manual_segment("rep"),
         )
         self.mark_norep_button = ttk.Button(
-            controls, text="Mark as no-rep",
+            ctrl_wrap, text="Mark as no-rep",
             command=lambda: self.mark_manual_segment("no-rep"),
         )
         self.mark_finish_button = ttk.Button(
-            controls, text="Mark as finish",
+            ctrl_wrap, text="Mark as finish",
             command=lambda: self.mark_manual_segment("finish"),
         )
 
+        # Register the manual buttons so they wrap too, but keep them
+        # hidden until new_video_mode activates them.
+        for btn in (
+            self.mark_prep_button, self.mark_rep_button,
+            self.mark_norep_button, self.mark_finish_button,
+        ):
+            ctrl_wrap.add(btn)
+
         self.undo_button = ttk.Button(
-            controls, text="Undo last mark", command=self.undo_last_mark
+            ctrl_wrap, text="Undo", command=self.undo_last_mark
         )
-        self.undo_button.grid(row=0, column=4, padx=2, sticky="w")
+        ctrl_wrap.add(self.undo_button)
 
         self.clear_button = ttk.Button(
-            controls, text="Clear annotations", command=self.clear_annotations
+            ctrl_wrap, text="Clear", command=self.clear_annotations
         )
-        self.clear_button.grid(row=0, column=5, padx=2)
+        ctrl_wrap.add(self.clear_button)
 
         self.save_button = ttk.Button(
-            controls, text="Save annotations", command=self.save_annotations
+            ctrl_wrap, text="Save", command=self.save_annotations
         )
-        self.save_button.grid(row=0, column=6, padx=2)
+        ctrl_wrap.add(self.save_button)
 
-        # Frame slider
+        # Keep references so _update_buttons can show/hide them
+        self._ctrl_wrap = ctrl_wrap
+
+        # -- Frame slider --
         slider_frame = ttk.Frame(self.controls_panel)
-        slider_frame.pack(fill=tk.X, pady=(0, 4))
+        slider_frame.pack(fill=tk.X, pady=(2, 2))
         slider_frame.columnconfigure(0, weight=1)
 
         self.frame_slider = ttk.Scale(
@@ -332,12 +345,12 @@ class VideoPoseLabellerApp:
         self.frame_slider.grid(row=0, column=0, sticky="ew")
         ttk.Label(
             slider_frame, textvariable=self.frame_info_var,
-            width=20, anchor="e",
-        ).grid(row=0, column=1, padx=(8, 0))
+            width=18, anchor="e",
+        ).grid(row=0, column=1, padx=(6, 0))
 
-        # State / sequence info
+        # -- State / sequence info --
         info_frame = ttk.Frame(self.controls_panel)
-        info_frame.pack(fill=tk.X, pady=(4, 0))
+        info_frame.pack(fill=tk.X, pady=(2, 0))
         info_frame.columnconfigure(0, weight=1)
 
         ttk.Label(
@@ -348,59 +361,74 @@ class VideoPoseLabellerApp:
             anchor="w", foreground="#444",
         ).grid(row=1, column=0, sticky="ew")
 
-        # Annotation tree
+        # -- Annotation tree --
         self.annotation_tree = ttk.Treeview(
             self.controls_panel,
-            columns=("start", "end", "label"),
+            columns=("play", "start", "end", "label"),
             show="headings",
-            height=6,
+            height=1, # was 6 — no longer forces a minimum window height
         )
+        self.annotation_tree.heading("play",  text="")
         self.annotation_tree.heading("start", text="Start")
-        self.annotation_tree.heading("end", text="End")
+        self.annotation_tree.heading("end",   text="End")
         self.annotation_tree.heading("label", text="Label")
-        self.annotation_tree.column("start", width=80, anchor="center")
-        self.annotation_tree.column("end", width=80, anchor="center")
-        self.annotation_tree.column("label", width=120, anchor="center")
-        self.annotation_tree.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
-        self.annotation_tree.bind("<Double-1>", self.on_annotation_double_click)
+        self.annotation_tree.column("play",  width=32,  anchor="center", stretch=False)
+        self.annotation_tree.column("start", width=70,  anchor="center")
+        self.annotation_tree.column("end",   width=70,  anchor="center")
+        self.annotation_tree.column("label", width=100, anchor="center")
+        self.annotation_tree.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self.annotation_tree.bind("<Double-1>",       self.on_annotation_double_click)
         self.annotation_tree.bind("<ButtonRelease-1>", self.on_annotation_click)
 
-        # Annotation management buttons
-        annotation_buttons = ttk.Frame(self.controls_panel)
-        annotation_buttons.pack(fill=tk.X, pady=(4, 0))
+        # Annotation management buttons (also wrapping)
+        ann_wrap = WrapFrame(self.controls_panel, padx=2, pady=2, bg="#f0f0f0")
+        ann_wrap.pack(fill=tk.X, pady=(2, 0))
 
-        ttk.Button(
-            annotation_buttons, text="Edit Selected",
-            command=self.edit_selected_annotation,
-        ).grid(row=0, column=0, padx=2)
-        ttk.Button(
-            annotation_buttons, text="Delete Selected",
-            command=self.delete_selected_annotation,
-        ).grid(row=0, column=1, padx=2)
-        ttk.Button(
-            annotation_buttons, text="Insert Segment",
-            command=self.insert_segment,
-        ).grid(row=0, column=2, padx=2)
+        ann_wrap.add(
+            ttk.Button(ann_wrap, text="Edit Selected",
+                       command=self.edit_selected_annotation)
+        )
+        ann_wrap.add(
+            ttk.Button(ann_wrap, text="Delete Selected",
+                       command=self.delete_selected_annotation)
+        )
+        ann_wrap.add(
+            ttk.Button(ann_wrap, text="Insert Segment",
+                       command=self.insert_segment)
+        )
 
-        # Binary label display
-        binary_display_frame = ttk.Frame(self.controls_panel)
-        binary_display_frame.pack(fill=tk.X, pady=(8, 0))
-        binary_display_frame.columnconfigure(1, weight=1)
+        # -- Binary label display (compact, wraps onto its own row if needed) --
+        bin_wrap = WrapFrame(self.controls_panel, padx=4, pady=2, bg="#f0f0f0")
+        bin_wrap.pack(fill=tk.X, pady=(6, 0))
 
-        ttk.Label(
-            binary_display_frame,
-            text="Binary Label:",
-            font=("TkDefaultFont", 9, "bold"),
-        ).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        bin_wrap.add(
+            ttk.Label(
+                bin_wrap,
+                text="Binary Label:",
+                font=("TkDefaultFont", 9, "bold"),
+            )
+        )
 
         self.binary_label_var = tk.StringVar(value="—")
-        ttk.Label(
-            binary_display_frame,
-            textvariable=self.binary_label_var,
-            anchor="w",
-            foreground="#0055cc",
-            font=("Courier", 10, "bold"),
-        ).grid(row=0, column=1, sticky="ew")
+        bin_wrap.add(
+            ttk.Label(
+                bin_wrap,
+                textvariable=self.binary_label_var,
+                foreground="#0055cc",
+                font=("Courier", 9, "bold"),
+                width=20,
+            )
+        )
+
+        self.rep_count_var = tk.StringVar(value="")
+        bin_wrap.add(
+            ttk.Label(
+                bin_wrap,
+                textvariable=self.rep_count_var,
+                foreground="#555555",
+                font=("TkDefaultFont", 9),
+            )
+        )
 
         # ---- Status bar (always row 2, spans all columns) ----
         self.status_bar = ttk.Label(
@@ -515,27 +543,34 @@ class VideoPoseLabellerApp:
         """
         self.current_layout = "vertical"
 
-        self.root.columnconfigure(0, weight=0)   # sidebar
-        self.root.columnconfigure(1, weight=0)   # portrait canvas — fixed width
-        self.root.columnconfigure(2, weight=1)   # controls — expands
+        self.root.columnconfigure(0, weight=0, minsize=180)  # sidebar
+        self.root.columnconfigure(1, weight=0)               # portrait canvas
+        self.root.columnconfigure(2, weight=1)               # controls
         self.root.rowconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=0)
 
-        # Sidebar — column 0, row 0 only (no rowspan needed)
-        self.sidebar.grid(row=0, column=0, rowspan=1, sticky="ns",
-                          padx=0, pady=0)
+        # Sidebar
+        self.sidebar.grid(
+            row=0, column=0, rowspan=1, sticky="nsew", padx=0, pady=0
+        )
 
-        # Canvas — column 1, portrait dimensions
-        self.canvas_outer.grid(row=0, column=1, columnspan=1,
-                                sticky="ns", padx=(4, 4), pady=0)
+        # Canvas — strict 9:16, column 1
+        self.canvas_outer.grid(
+            row=0, column=1, columnspan=1,
+            sticky="ns", padx=(4, 4), pady=0
+        )
         self.canvas_outer.columnconfigure(0, weight=1)
         self.canvas_outer.rowconfigure(0, weight=1)
 
-        self.video_canvas.config(width=360, height=640)
+        portrait_w = 320
+        portrait_h = int(portrait_w * 16 / 9)
+        self.video_canvas.config(width=portrait_w, height=portrait_h)
 
-        # Controls panel — column 2, row 0, expands vertically
-        self.controls_panel.grid(row=0, column=2, columnspan=1,
-                                  sticky="nsew", padx=(4, 0), pady=0)
+        # Controls panel — column 2
+        self.controls_panel.grid(
+            row=0, column=2, columnspan=1,
+            sticky="nsew", padx=(4, 0), pady=0
+        )
 
         # Status bar — row 2
         self.status_bar.grid(row=2, column=0, columnspan=3, sticky="ew")
@@ -543,7 +578,60 @@ class VideoPoseLabellerApp:
         if self.original_frame is not None:
             self._apply_zoom_and_display(self.original_frame)
 
+        # Wait until all widgets have resolved their minimum sizes before
+        # setting the window geometry — this prevents other widgets from
+        # immediately overriding the height we set.
+        def _set_geometry() -> None:
+            self.root.update_idletasks()
+            screen_h = self.root.winfo_screenheight()
+            # Derive window height from the canvas 9:16 ratio plus chrome
+            sidebar_w    = self.sidebar.winfo_reqwidth()
+            canvas_col_w = portrait_w + 8          # canvas + its padding
+            controls_w   = 480                     # comfortable controls width
+            win_w        = sidebar_w + canvas_col_w + controls_w
+            # Height = canvas height + status bar + a little padding
+            status_h     = self.status_bar.winfo_reqheight()
+            win_h        = min(portrait_h + status_h + 24,
+                               int(screen_h * 0.92))
+            self.root.geometry(f"{win_w}x{win_h}")
+            # Re-enforce ratio after geometry settles
+            self.root.after(
+                50, lambda: self._enforce_portrait_ratio(portrait_w, portrait_h)
+            )
+
+        self.root.after_idle(_set_geometry)
         self.status_var.set("Vertical player layout applied")
+
+    def _on_canvas_resize(self, event: tk.Event) -> None:
+        """Re-render the current frame on resize.
+        In vertical layout enforce a strict 9:16 ratio by deriving the
+        canvas height from its actual rendered width every time.
+        """
+        if event.widget is not self.video_canvas:
+            return
+
+        if self.current_layout == "vertical":
+            # event.width is the new width Tkinter is proposing.
+            # Derive the correct 9:16 height from it.
+            new_w = max(1, event.width)
+            new_h = int(new_w * 16 / 9)
+
+            # Use after() to break the Configure feedback loop —
+            # setting config() inside a Configure handler can cause
+            # infinite recursion on some platforms.
+            self.root.after(1, lambda w=new_w, h=new_h:
+                            self._enforce_portrait_ratio(w, h))
+            return
+
+        if self.original_frame is not None:
+            self._apply_zoom_and_display(self.original_frame)
+
+    def _enforce_portrait_ratio(self, w: int, h: int) -> None:
+        """Apply 9:16 canvas dimensions and re-render, called via after()
+        to avoid recursive Configure events."""
+        self.video_canvas.config(width=w, height=h)
+        if self.original_frame is not None:
+            self._apply_zoom_and_display(self.original_frame)
 
     def _reparent_controls(self, new_parent: tk.Widget) -> ttk.Frame:
         """Detach the controls panel from wherever it currently lives and
@@ -597,22 +685,34 @@ class VideoPoseLabellerApp:
     # ------------------------------------------------------------------
     def _refresh_binary_label_display(self) -> None:
         """Recompute and display the binary label from current segments,
-        and keep self.binary_label in sync so it is written to JSON on save."""
+        keep self.binary_label in sync, and update the rep/no-rep count."""
         middle = [
             seg for seg in self.recorded_segments
             if seg.label in ("rep", "no-rep")
         ]
         middle.sort(key=lambda s: s.start)
+
         if middle:
             derived = "".join("1" if s.label == "rep" else "0" for s in middle)
+            rep_count = sum(1 for s in middle if s.label == "rep")
+            no_rep_count = sum(1 for s in middle if s.label == "no-rep")
+            self.rep_count_var.set(
+                f"({rep_count} rep{'s' if rep_count != 1 else ''}, "
+                f"{no_rep_count} no-rep{'s' if no_rep_count != 1 else ''})"
+            )
         elif self.binary_label:
             derived = self.binary_label
+            rep_count = self.binary_label.count("1")
+            no_rep_count = self.binary_label.count("0")
+            self.rep_count_var.set(
+                f"({rep_count} rep{'s' if rep_count != 1 else ''}, "
+                f"{no_rep_count} no-rep{'s' if no_rep_count != 1 else ''})"
+            )
         else:
             derived = "—"
+            self.rep_count_var.set("")
 
-        # Keep the internal binary_label in sync with what is displayed
-        # so that both save paths (_save_existing_annotations and
-        # _save_new_video_annotations) always write the correct value.
+        # Keep internal binary_label in sync with what is displayed
         if derived != "—":
             self.binary_label = derived
 
@@ -787,41 +887,75 @@ class VideoPoseLabellerApp:
             self.edit_selected_annotation()
 
     def on_annotation_click(self, event: tk.Event) -> None:
-        """Seek to a frame when the user clicks a start or end cell in the
-        annotation table.  Clicking anywhere else in the row does nothing."""
-        # Identify the region — ignore clicks on headings or empty space
+        """Handle single clicks on the annotation table:
+        - Column 1 (▶)     → play segment from start to end frame
+        - Column 2 (Start) → seek to start frame
+        - Column 3 (End)   → seek to end frame
+        """
         region = self.annotation_tree.identify_region(event.x, event.y)
         if region != "cell":
             return
 
-        # Which column was clicked?
         column_id = self.annotation_tree.identify_column(event.x)
-        # Treeview columns are 1-indexed strings: "#1" = start, "#2" = end
-        if column_id not in ("#1", "#2"):
-            return
-
-        # Which row?
-        row_id = self.annotation_tree.identify_row(event.y)
+        row_id    = self.annotation_tree.identify_row(event.y)
         if not row_id:
             return
 
         values = self.annotation_tree.item(row_id, "values")
-        if not values or len(values) < 2:
+        if not values or len(values) < 4:
             return
 
-        try:
-            frame_index = int(values[0] if column_id == "#1" else values[1])
-        except ValueError:
-            return
+        # Column mapping: #1=play, #2=start, #3=end, #4=label
+        if column_id == "#1":
+            # Play segment
+            try:
+                start = int(values[1])
+                end   = int(values[2])
+            except ValueError:
+                return
+            self._play_segment(start, end)
 
+        elif column_id in ("#2", "#3"):
+            # Seek to start or end frame
+            if not self.capture:
+                return
+            try:
+                frame_index = int(values[1] if column_id == "#2" else values[2])
+            except ValueError:
+                return
+            self.pause_video()
+            self.seek_to_frame(frame_index)
+            self.status_var.set(
+                f"Seeked to {'start' if column_id == '#2' else 'end'}"
+                f" frame {frame_index}"
+            )
+
+    def _play_segment(self, start: int, end: int) -> None:
+        """Seek to *start* and play until *end*, then pause."""
         if not self.capture:
             return
-
         self.pause_video()
-        self.seek_to_frame(frame_index)
-        self.status_var.set(
-            f"Seeked to {'start' if column_id == '#1' else 'end'} frame {frame_index}"
-        )
+        self.seek_to_frame(start)
+        self._segment_end = end
+        self.playing = True
+        self.play_button.configure(text="Pause")
+        self._segment_play_loop()
+
+    def _segment_play_loop(self) -> None:
+        """Playback loop that stops automatically at self._segment_end."""
+        if not self.playing or not self.capture:
+            return
+        if self.current_frame >= self._segment_end:
+            self.pause_video()
+            self.status_var.set(
+                f"Finished playing segment "
+                f"(frames {self._segment_end - (self._segment_end - self.current_frame)}"
+                f"–{self._segment_end})"
+            )
+            return
+        self.current_frame += 1
+        self.show_frame(self.current_frame)
+        self.after_id = self.root.after(self.frame_delay_ms, self._segment_play_loop)
 
     def edit_selected_annotation(self) -> None:
         selection = self.annotation_tree.selection()
@@ -1132,13 +1266,13 @@ class VideoPoseLabellerApp:
             self.pause_video()
         else:
             self.playing = True
-            self.play_button.configure(text="Pause")
+            self.play_button.configure(text="⏸")
             self._play_loop()
 
     def pause_video(self) -> None:
         if self.playing:
             self.playing = False
-            self.play_button.configure(text="Play")
+            self.play_button.configure(text="▶")
         if self.after_id is not None:
             self.root.after_cancel(self.after_id)
             self.after_id = None
@@ -1485,46 +1619,74 @@ class VideoPoseLabellerApp:
             self.annotation_tree.delete(child)
         for seg in self.recorded_segments:
             self.annotation_tree.insert(
-                "", tk.END, values=(seg.start, seg.end, seg.label)
+                "", tk.END,
+                values=("▶", seg.start, seg.end, seg.label),
             )
 
     def _update_buttons(self) -> None:
-        has_video = self.capture is not None
-        can_mark = has_video and self.current_state_index < len(self.state_sequence)
+        has_video    = self.capture is not None
+        can_mark     = has_video and self.current_state_index < len(self.state_sequence)
         has_segments = bool(self.recorded_segments)
-        # Save is available whenever a video is loaded and there is
-        # at least one segment — regardless of annotation completion state.
-        can_save = has_video and has_segments
+        can_save     = has_video and has_segments
 
         self.play_button.config(state="normal" if has_video else "disabled")
 
-        if self.new_video_mode and not self.binary_label:
-            self.mark_button.grid_remove()
-            self.mark_prep_button.grid(row=0, column=3, padx=2)
-            self.mark_rep_button.grid(row=0, column=4, padx=2)
-            self.mark_norep_button.grid(row=0, column=5, padx=2)
-            self.mark_finish_button.grid(row=0, column=6, padx=2)
-            self.undo_button.grid(row=0, column=7, padx=2, sticky="w")
-            self.clear_button.grid(row=0, column=8, padx=2)
-            self.save_button.grid(row=0, column=9, padx=2)
-        else:
-            self.mark_prep_button.grid_remove()
-            self.mark_rep_button.grid_remove()
-            self.mark_norep_button.grid_remove()
-            self.mark_finish_button.grid_remove()
-            self.mark_button.grid(row=0, column=3, padx=8)
-            self.undo_button.grid(row=0, column=4, padx=2, sticky="w")
-            self.clear_button.grid(row=0, column=5, padx=2)
-            self.save_button.grid(row=0, column=6, padx=2)
+        # Show the right marking buttons by adding/removing from the
+        # WrapFrame's managed-children list and hiding via place_forget.
+        manual_btns = [
+            self.mark_prep_button, self.mark_rep_button,
+            self.mark_norep_button, self.mark_finish_button,
+        ]
 
-        self.mark_button.config(state="normal" if can_mark else "disabled")
-        self.mark_prep_button.config(state="normal" if has_video else "disabled")
-        self.mark_rep_button.config(state="normal" if has_video else "disabled")
-        self.mark_norep_button.config(state="normal" if has_video else "disabled")
-        self.mark_finish_button.config(state="normal" if has_video else "disabled")
-        self.undo_button.config(state="normal" if has_segments else "disabled")
-        self.clear_button.config(state="normal" if has_segments else "disabled")
-        self.save_button.config(state="normal" if can_save else "disabled")
+        if self.new_video_mode and not self.binary_label:
+            # Hide the state-sequence button
+            self.mark_button.place_forget()
+            if self.mark_button in self._ctrl_wrap._children:
+                self._ctrl_wrap._children.remove(self.mark_button)
+            # Ensure manual buttons are in the wrap list
+            for btn in manual_btns:
+                if btn not in self._ctrl_wrap._children:
+                    idx = self._ctrl_wrap._children.index(self.undo_button)
+                    self._ctrl_wrap._children.insert(idx, btn)
+        else:
+            # Hide manual buttons
+            for btn in manual_btns:
+                btn.place_forget()
+                if btn in self._ctrl_wrap._children:
+                    self._ctrl_wrap._children.remove(btn)
+            # Ensure mark_button is in the wrap list
+            if self.mark_button not in self._ctrl_wrap._children:
+                idx = self._ctrl_wrap._children.index(self.undo_button)
+                self._ctrl_wrap._children.insert(idx, self.mark_button)
+
+        # Trigger a reflow so the visible buttons re-pack immediately
+        self._ctrl_wrap.update_idletasks()
+        self._ctrl_wrap._reflow(self._ctrl_wrap.winfo_width())
+
+        self.mark_button.config(
+            state="normal" if can_mark else "disabled"
+        )
+        self.mark_prep_button.config(
+            state="normal" if has_video else "disabled"
+        )
+        self.mark_rep_button.config(
+            state="normal" if has_video else "disabled"
+        )
+        self.mark_norep_button.config(
+            state="normal" if has_video else "disabled"
+        )
+        self.mark_finish_button.config(
+            state="normal" if has_video else "disabled"
+        )
+        self.undo_button.config(
+            state="normal" if has_segments else "disabled"
+        )
+        self.clear_button.config(
+            state="normal" if has_segments else "disabled"
+        )
+        self.save_button.config(
+            state="normal" if can_save else "disabled"
+        )
 
     # ------------------------------------------------------------------
     # New video loading functionality
@@ -1888,6 +2050,55 @@ class VideoPoseLabellerApp:
 # ======================================================================
 # Dialog classes
 # ======================================================================
+
+class WrapFrame(tk.Frame):
+    """A frame that arranges child widgets in left-to-right rows and
+    automatically wraps them onto the next row when there is not enough
+    horizontal space.  Use add() to append widgets instead of packing
+    or gridding them directly.
+    """
+
+    def __init__(self, parent, padx: int = 2, pady: int = 2, **kwargs) -> None:
+        super().__init__(parent, **kwargs)
+        self._children: list[tk.Widget] = []
+        self._padx = padx
+        self._pady = pady
+        self.bind("<Configure>", self._on_configure)
+
+    def add(self, widget: tk.Widget) -> tk.Widget:
+        """Register *widget* as a managed child and return it."""
+        self._children.append(widget)
+        return widget
+
+    def _on_configure(self, event: tk.Event) -> None:
+        self._reflow(event.width)
+
+    def _reflow(self, max_width: int) -> None:
+        if max_width <= 1:
+            return
+        # Place every child, wrapping when the row would exceed max_width
+        x = self._padx
+        y = self._pady
+        row_height = 0
+
+        for widget in self._children:
+            widget.update_idletasks()
+            w = widget.winfo_reqwidth()
+            h = widget.winfo_reqheight()
+
+            if x + w + self._padx > max_width and x > self._padx:
+                # Wrap to next row
+                x = self._padx
+                y += row_height + self._pady
+                row_height = 0
+
+            widget.place(x=x, y=y)
+            x += w + self._padx
+            row_height = max(row_height, h)
+
+        # Tell the frame how tall it needs to be to show all rows
+        total_height = y + row_height + self._pady
+        self.configure(height=total_height)
 
 class SegmentEditDialog:
     """Dialog for editing segment start/end frames and labels."""
