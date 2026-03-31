@@ -27,10 +27,15 @@ class VideoEditor:
         
         # Zoom properties
         self.zoom_level = 1.0
-        self.pan_x = 0
-        self.pan_y = 0
+        # Focal point: the point in the video (0-1 normalized) that should be at center of view
+        self.focal_x = 0.5  # Center of video horizontally
+        self.focal_y = 0.5  # Center of video vertically
+        
+        # Pan drag tracking
         self.drag_start_x = 0
         self.drag_start_y = 0
+        self.drag_start_focal_x = 0
+        self.drag_start_focal_y = 0
         self.is_dragging = False
         
         # Flag to prevent callback loops
@@ -58,7 +63,7 @@ class VideoEditor:
             'btn_gray': '#666666',
             'btn_dark': '#444444',
             'text_light': '#ffffff',
-            'text_dark': '#1a1a1a',  # Dark text for buttons
+            'text_dark': '#1a1a1a',
             'text_muted': '#666666'
         }
         
@@ -217,8 +222,6 @@ class VideoEditor:
         )
         presets_label.pack(side=tk.LEFT, padx=(20, 5))
         
-        # FIXED: Changed fg from text_light to text_dark
-        # Also changed bg from btn_dark to bg_light for better readability
         for preset in [50, 100, 150, 200]:
             btn = tk.Button(
                 zoom_frame, text=f"{preset}%",
@@ -361,7 +364,7 @@ class VideoEditor:
             if self.canvas:
                 self.canvas.delete("placeholder")
             
-            # Reset zoom and pan
+            # Reset zoom and center focal point
             self.reset_zoom()
             
             # Display first frame
@@ -385,6 +388,20 @@ class VideoEditor:
         except Exception as e:
             print(f"Error displaying frame: {e}")
             
+    def get_canvas_dimensions(self):
+        """Get canvas dimensions with fallback defaults"""
+        if self.canvas is None:
+            return 800, 450
+            
+        self.canvas.update_idletasks()
+        canvas_width = self.canvas.winfo_width()
+        canvas_height = self.canvas.winfo_height()
+        
+        if canvas_width <= 1 or canvas_height <= 1:
+            return 800, 450
+            
+        return canvas_width, canvas_height
+            
     def apply_zoom_and_display(self, frame):
         if frame is None or self.canvas is None:
             return
@@ -393,16 +410,8 @@ class VideoEditor:
             # Convert BGR to RGB
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
-            # Update canvas to get current dimensions
-            self.canvas.update_idletasks()
-            
             # Get canvas dimensions
-            canvas_width = self.canvas.winfo_width()
-            canvas_height = self.canvas.winfo_height()
-            
-            if canvas_width <= 1 or canvas_height <= 1:
-                canvas_width = 800
-                canvas_height = 450
+            canvas_width, canvas_height = self.get_canvas_dimensions()
                 
             # Calculate zoomed dimensions
             zoomed_width = max(1, int(self.width * self.zoom_level))
@@ -414,16 +423,26 @@ class VideoEditor:
                 interpolation=cv2.INTER_LINEAR
             )
             
-            # Calculate crop region for panning
-            max_pan_x = max(0, zoomed_width - canvas_width)
-            max_pan_y = max(0, zoomed_height - canvas_height)
+            # Calculate the position of the focal point in zoomed coordinates
+            focal_x_px = self.focal_x * zoomed_width
+            focal_y_px = self.focal_y * zoomed_height
             
-            self.pan_x = max(0, min(self.pan_x, max_pan_x))
-            self.pan_y = max(0, min(self.pan_y, max_pan_y))
+            # Calculate top-left corner of visible region
+            # We want the focal point to be at the center of the canvas
+            view_x = focal_x_px - canvas_width / 2
+            view_y = focal_y_px - canvas_height / 2
             
-            # Crop the visible region
-            x1 = int(self.pan_x)
-            y1 = int(self.pan_y)
+            # Calculate maximum allowed view positions
+            max_view_x = max(0, zoomed_width - canvas_width)
+            max_view_y = max(0, zoomed_height - canvas_height)
+            
+            # Clamp view position
+            view_x = max(0, min(view_x, max_view_x))
+            view_y = max(0, min(view_y, max_view_y))
+            
+            # Calculate crop region
+            x1 = int(view_x)
+            y1 = int(view_y)
             x2 = min(x1 + canvas_width, zoomed_width)
             y2 = min(y1 + canvas_height, zoomed_height)
             
@@ -481,6 +500,7 @@ class VideoEditor:
         self.set_zoom(percent / 100.0)
         
     def set_zoom(self, level):
+        """Set zoom level - focal point stays centered automatically"""
         try:
             self.zoom_level = max(0.1, min(5.0, level))
             
@@ -518,9 +538,10 @@ class VideoEditor:
         self.set_zoom(self.zoom_level - 0.1)
         
     def reset_zoom(self):
+        """Reset zoom to 100% and center the focal point"""
         self.zoom_level = 1.0
-        self.pan_x = 0
-        self.pan_y = 0
+        self.focal_x = 0.5
+        self.focal_y = 0.5
         
         if self.zoom_slider:
             self.updating_slider = True
@@ -534,25 +555,33 @@ class VideoEditor:
             self.apply_zoom_and_display(self.original_frame)
             
     def fit_to_window(self):
+        """Fit video to window and center it"""
         if self.cap is None or self.canvas is None:
             return
             
         try:
-            self.canvas.update_idletasks()
-            canvas_width = self.canvas.winfo_width()
-            canvas_height = self.canvas.winfo_height()
+            canvas_width, canvas_height = self.get_canvas_dimensions()
             
             if self.width <= 0 or self.height <= 0:
-                return
-            if canvas_width <= 1 or canvas_height <= 1:
                 return
                 
             scale_x = canvas_width / self.width
             scale_y = canvas_height / self.height
             
-            self.pan_x = 0
-            self.pan_y = 0
-            self.set_zoom(min(scale_x, scale_y))
+            self.zoom_level = min(scale_x, scale_y)
+            self.focal_x = 0.5
+            self.focal_y = 0.5
+            
+            if self.zoom_slider:
+                self.updating_slider = True
+                self.zoom_slider.set(int(self.zoom_level * 100))
+                self.updating_slider = False
+                
+            if self.zoom_level_label:
+                self.zoom_level_label.config(text=f"{int(self.zoom_level * 100)}%")
+            
+            if self.original_frame is not None:
+                self.apply_zoom_and_display(self.original_frame)
         except Exception as e:
             print(f"Error in fit_to_window: {e}")
             
@@ -568,15 +597,35 @@ class VideoEditor:
             
     # Pan functions
     def start_pan(self, event):
-        self.drag_start_x = event.x + self.pan_x
-        self.drag_start_y = event.y + self.pan_y
+        self.drag_start_x = event.x
+        self.drag_start_y = event.y
+        self.drag_start_focal_x = self.focal_x
+        self.drag_start_focal_y = self.focal_y
         self.is_dragging = True
         
     def do_pan(self, event):
         if self.is_dragging and self.original_frame is not None:
             try:
-                self.pan_x = self.drag_start_x - event.x
-                self.pan_y = self.drag_start_y - event.y
+                # Calculate how much the mouse has moved
+                dx = event.x - self.drag_start_x
+                dy = event.y - self.drag_start_y
+                
+                # Convert pixel movement to focal point movement (normalized)
+                # Moving mouse right should move focal point left (and vice versa)
+                zoomed_width = self.width * self.zoom_level
+                zoomed_height = self.height * self.zoom_level
+                
+                focal_dx = -dx / zoomed_width
+                focal_dy = -dy / zoomed_height
+                
+                # Update focal point
+                self.focal_x = self.drag_start_focal_x + focal_dx
+                self.focal_y = self.drag_start_focal_y + focal_dy
+                
+                # Clamp focal point to valid range
+                self.focal_x = max(0.0, min(1.0, self.focal_x))
+                self.focal_y = max(0.0, min(1.0, self.focal_y))
+                
                 self.apply_zoom_and_display(self.original_frame)
             except Exception as e:
                 print(f"Error in do_pan: {e}")
