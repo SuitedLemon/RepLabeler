@@ -137,9 +137,20 @@ class VideoEditor:
         self.canvas.bind("<ButtonPress-1>", self.start_pan)
         self.canvas.bind("<B1-Motion>", self.do_pan)
         self.canvas.bind("<ButtonRelease-1>", self.stop_pan)
-        self.canvas.bind("<MouseWheel>", self.mouse_zoom)  # Windows
+        
+        # Bind zoom events - cursor position aware
+        self.canvas.bind("<MouseWheel>", self.mouse_zoom)  # Windows/macOS
         self.canvas.bind("<Button-4>", self.mouse_zoom)    # Linux scroll up
         self.canvas.bind("<Button-5>", self.mouse_zoom)    # Linux scroll down
+        
+        # Bind pinch-to-zoom for macOS trackpad (uses gesture events)
+        self.canvas.bind("<Control-MouseWheel>", self.mouse_zoom)  # Ctrl+scroll fallback
+        
+        # Try to bind trackpad gestures (macOS)
+        try:
+            self.canvas.bind("<Gesture-Pinch>", self.pinch_zoom)
+        except:
+            pass  # Not supported on this platform
         
         # Placeholder text
         self.canvas.create_text(
@@ -401,6 +412,72 @@ class VideoEditor:
             return 800, 450
             
         return canvas_width, canvas_height
+    
+    def get_video_display_info(self):
+        """
+        Calculate video display information including offset when video is smaller than canvas.
+        Returns: (zoomed_width, zoomed_height, display_offset_x, display_offset_y, view_x, view_y)
+        """
+        canvas_width, canvas_height = self.get_canvas_dimensions()
+        
+        zoomed_width = max(1, int(self.width * self.zoom_level))
+        zoomed_height = max(1, int(self.height * self.zoom_level))
+        
+        # Calculate the position of the focal point in zoomed coordinates
+        focal_x_px = self.focal_x * zoomed_width
+        focal_y_px = self.focal_y * zoomed_height
+        
+        # Calculate top-left corner of visible region in zoomed video coordinates
+        view_x = focal_x_px - canvas_width / 2
+        view_y = focal_y_px - canvas_height / 2
+        
+        # Calculate maximum allowed view positions
+        max_view_x = max(0, zoomed_width - canvas_width)
+        max_view_y = max(0, zoomed_height - canvas_height)
+        
+        # Clamp view position
+        view_x = max(0, min(view_x, max_view_x))
+        view_y = max(0, min(view_y, max_view_y))
+        
+        # Calculate display offset (when video is smaller than canvas, it's centered)
+        display_offset_x = max(0, (canvas_width - zoomed_width) // 2)
+        display_offset_y = max(0, (canvas_height - zoomed_height) // 2)
+        
+        return zoomed_width, zoomed_height, display_offset_x, display_offset_y, view_x, view_y
+    
+    def canvas_to_video_coords(self, canvas_x, canvas_y):
+        """
+        Convert canvas coordinates to normalized video coordinates (0-1).
+        Returns None if the point is outside the video area.
+        """
+        if self.width <= 0 or self.height <= 0:
+            return None, None
+            
+        zoomed_width, zoomed_height, offset_x, offset_y, view_x, view_y = self.get_video_display_info()
+        
+        # Adjust for display offset (when video is centered in canvas)
+        adjusted_x = canvas_x - offset_x
+        adjusted_y = canvas_y - offset_y
+        
+        # Check if point is within video bounds
+        if adjusted_x < 0 or adjusted_y < 0:
+            return None, None
+        if adjusted_x > zoomed_width or adjusted_y > zoomed_height:
+            return None, None
+        
+        # Convert to position in zoomed video
+        zoomed_video_x = view_x + adjusted_x
+        zoomed_video_y = view_y + adjusted_y
+        
+        # Convert to normalized coordinates (0-1)
+        norm_x = zoomed_video_x / zoomed_width
+        norm_y = zoomed_video_y / zoomed_height
+        
+        # Clamp to valid range
+        norm_x = max(0.0, min(1.0, norm_x))
+        norm_y = max(0.0, min(1.0, norm_y))
+        
+        return norm_x, norm_y
             
     def apply_zoom_and_display(self, frame):
         if frame is None or self.canvas is None:
@@ -412,33 +489,15 @@ class VideoEditor:
             
             # Get canvas dimensions
             canvas_width, canvas_height = self.get_canvas_dimensions()
-                
-            # Calculate zoomed dimensions
-            zoomed_width = max(1, int(self.width * self.zoom_level))
-            zoomed_height = max(1, int(self.height * self.zoom_level))
+            
+            # Get display info
+            zoomed_width, zoomed_height, display_offset_x, display_offset_y, view_x, view_y = self.get_video_display_info()
             
             # Resize frame according to zoom level
             zoomed_frame = cv2.resize(
                 frame_rgb, (zoomed_width, zoomed_height),
                 interpolation=cv2.INTER_LINEAR
             )
-            
-            # Calculate the position of the focal point in zoomed coordinates
-            focal_x_px = self.focal_x * zoomed_width
-            focal_y_px = self.focal_y * zoomed_height
-            
-            # Calculate top-left corner of visible region
-            # We want the focal point to be at the center of the canvas
-            view_x = focal_x_px - canvas_width / 2
-            view_y = focal_y_px - canvas_height / 2
-            
-            # Calculate maximum allowed view positions
-            max_view_x = max(0, zoomed_width - canvas_width)
-            max_view_y = max(0, zoomed_height - canvas_height)
-            
-            # Clamp view position
-            view_x = max(0, min(view_x, max_view_x))
-            view_y = max(0, min(view_y, max_view_y))
             
             # Calculate crop region
             x1 = int(view_x)
@@ -456,12 +515,9 @@ class VideoEditor:
                 # Clear canvas and display
                 self.canvas.delete("video")
                 
-                # Center the image if smaller than canvas
-                display_x = max(0, (canvas_width - (x2 - x1)) // 2)
-                display_y = max(0, (canvas_height - (y2 - y1)) // 2)
-                
+                # Use calculated display offset for centering
                 self.canvas.create_image(
-                    display_x, display_y, anchor=tk.NW,
+                    display_offset_x, display_offset_y, anchor=tk.NW,
                     image=self.photo, tags="video"
                 )
         except Exception as e:
@@ -496,7 +552,7 @@ class VideoEditor:
         
     # Zoom functions
     def set_zoom_percent(self, percent):
-        """Set zoom from percentage value"""
+        """Set zoom from percentage value (centers on video center)"""
         self.set_zoom(percent / 100.0)
         
     def set_zoom(self, level):
@@ -516,6 +572,92 @@ class VideoEditor:
                 self.apply_zoom_and_display(self.original_frame)
         except Exception as e:
             print(f"Error setting zoom: {e}")
+    
+    def set_zoom_at_point(self, new_level, cursor_x, cursor_y):
+        """
+        Set zoom level while keeping the point under the cursor stationary.
+        This creates a natural zoom-to-cursor effect.
+        """
+        try:
+            if self.width <= 0 or self.height <= 0:
+                self.set_zoom(new_level)
+                return
+            
+            # Get the video coordinate under the cursor before zoom
+            video_x, video_y = self.canvas_to_video_coords(cursor_x, cursor_y)
+            
+            # If cursor is outside video, fall back to center zoom
+            if video_x is None or video_y is None:
+                self.set_zoom(new_level)
+                return
+            
+            # Get canvas dimensions
+            canvas_width, canvas_height = self.get_canvas_dimensions()
+            
+            # Calculate the old zoomed dimensions
+            old_zoomed_width = self.width * self.zoom_level
+            old_zoomed_height = self.height * self.zoom_level
+            
+            # Clamp new zoom level
+            new_level = max(0.1, min(5.0, new_level))
+            
+            # Calculate new zoomed dimensions
+            new_zoomed_width = self.width * new_level
+            new_zoomed_height = self.height * new_level
+            
+            # The point in the video that's under the cursor (in pixels, at new zoom)
+            point_x_new = video_x * new_zoomed_width
+            point_y_new = video_y * new_zoomed_height
+            
+            # Calculate display offset at new zoom
+            new_display_offset_x = max(0, (canvas_width - new_zoomed_width) / 2)
+            new_display_offset_y = max(0, (canvas_height - new_zoomed_height) / 2)
+            
+            # Where the cursor is relative to the display area
+            cursor_in_display_x = cursor_x - new_display_offset_x
+            cursor_in_display_y = cursor_y - new_display_offset_y
+            
+            # Calculate what view_x and view_y should be to keep the point under cursor
+            new_view_x = point_x_new - cursor_in_display_x
+            new_view_y = point_y_new - cursor_in_display_y
+            
+            # Calculate the new focal point from the new view position
+            # view_x = focal_x * zoomed_width - canvas_width / 2
+            # So: focal_x = (view_x + canvas_width / 2) / zoomed_width
+            
+            if new_zoomed_width > canvas_width:
+                new_focal_x = (new_view_x + canvas_width / 2) / new_zoomed_width
+            else:
+                new_focal_x = 0.5  # Center when video fits in canvas
+                
+            if new_zoomed_height > canvas_height:
+                new_focal_y = (new_view_y + canvas_height / 2) / new_zoomed_height
+            else:
+                new_focal_y = 0.5  # Center when video fits in canvas
+            
+            # Clamp focal point to valid range
+            self.focal_x = max(0.0, min(1.0, new_focal_x))
+            self.focal_y = max(0.0, min(1.0, new_focal_y))
+            
+            # Update zoom level
+            self.zoom_level = new_level
+            
+            # Update UI
+            if self.zoom_slider and not self.updating_slider:
+                self.updating_slider = True
+                self.zoom_slider.set(int(self.zoom_level * 100))
+                self.updating_slider = False
+                
+            if self.zoom_level_label:
+                self.zoom_level_label.config(text=f"{int(self.zoom_level * 100)}%")
+            
+            if self.original_frame is not None:
+                self.apply_zoom_and_display(self.original_frame)
+                
+        except Exception as e:
+            print(f"Error in set_zoom_at_point: {e}")
+            # Fall back to regular zoom
+            self.set_zoom(new_level)
             
     def on_zoom_slider(self, value):
         if not self.updating_slider:
@@ -532,9 +674,11 @@ class VideoEditor:
                 print(f"Error in zoom slider: {e}")
         
     def zoom_in(self):
+        """Zoom in centered on video center"""
         self.set_zoom(self.zoom_level + 0.1)
         
     def zoom_out(self):
+        """Zoom out centered on video center"""
         self.set_zoom(self.zoom_level - 0.1)
         
     def reset_zoom(self):
@@ -586,14 +730,47 @@ class VideoEditor:
             print(f"Error in fit_to_window: {e}")
             
     def mouse_zoom(self, event):
+        """Handle mouse wheel zoom - zooms toward cursor position"""
         try:
-            # Determine zoom direction
+            # Get cursor position relative to canvas
+            cursor_x = event.x
+            cursor_y = event.y
+            
+            # Determine zoom direction and factor
+            zoom_factor = 1.1  # 10% zoom per scroll step
+            
             if event.num == 4 or (hasattr(event, 'delta') and event.delta > 0):
-                self.set_zoom(self.zoom_level * 1.1)
+                # Zoom in
+                new_zoom = self.zoom_level * zoom_factor
             elif event.num == 5 or (hasattr(event, 'delta') and event.delta < 0):
-                self.set_zoom(self.zoom_level / 1.1)
+                # Zoom out
+                new_zoom = self.zoom_level / zoom_factor
+            else:
+                return
+            
+            # Apply zoom at cursor position
+            self.set_zoom_at_point(new_zoom, cursor_x, cursor_y)
+            
         except Exception as e:
             print(f"Error in mouse_zoom: {e}")
+    
+    def pinch_zoom(self, event):
+        """Handle pinch-to-zoom gesture (macOS trackpad)"""
+        try:
+            # Get cursor position (center of pinch)
+            cursor_x = event.x
+            cursor_y = event.y
+            
+            # event.delta contains the pinch magnitude
+            if hasattr(event, 'delta'):
+                if event.delta > 0:
+                    new_zoom = self.zoom_level * 1.05
+                else:
+                    new_zoom = self.zoom_level / 1.05
+                    
+                self.set_zoom_at_point(new_zoom, cursor_x, cursor_y)
+        except Exception as e:
+            print(f"Error in pinch_zoom: {e}")
             
     # Pan functions
     def start_pan(self, event):
