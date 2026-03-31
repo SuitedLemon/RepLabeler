@@ -48,6 +48,20 @@ class VideoEditor:
         self.photo = None
         self.main_frame = None
         
+        # Color scheme
+        self.colors = {
+            'bg_dark': '#2b2b2b',
+            'bg_medium': '#3c3c3c',
+            'bg_light': '#555555',
+            'accent_blue': '#4a9eff',
+            'accent_green': '#28a745',
+            'btn_gray': '#666666',
+            'btn_dark': '#444444',
+            'text_light': '#ffffff',
+            'text_dark': '#1a1a1a',  # Dark text for buttons
+            'text_muted': '#666666'
+        }
+        
         # Create UI
         self.create_ui()
         
@@ -56,7 +70,7 @@ class VideoEditor:
         
     def create_ui(self):
         # Main container
-        self.main_frame = tk.Frame(self.root, bg="#2b2b2b")
+        self.main_frame = tk.Frame(self.root, bg=self.colors['bg_dark'])
         self.main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
         # Top toolbar
@@ -72,14 +86,15 @@ class VideoEditor:
         self.create_playback_controls()
         
     def create_toolbar(self):
-        toolbar = tk.Frame(self.main_frame, bg="#3c3c3c", height=50)
+        toolbar = tk.Frame(self.main_frame, bg=self.colors['bg_medium'], height=50)
         toolbar.pack(fill=tk.X, pady=(0, 10))
         toolbar.pack_propagate(False)
         
         # Open button
         open_btn = tk.Button(
             toolbar, text="Open Video", command=self.open_video,
-            bg="#4a9eff", fg="white", font=("Arial", 10, "bold"),
+            bg=self.colors['accent_blue'], fg=self.colors['text_dark'],
+            font=("Arial", 10, "bold"),
             relief=tk.FLAT, padx=15, pady=5
         )
         open_btn.pack(side=tk.LEFT, padx=10, pady=10)
@@ -87,14 +102,16 @@ class VideoEditor:
         # Export button
         export_btn = tk.Button(
             toolbar, text="Export", command=self.export_video,
-            bg="#28a745", fg="white", font=("Arial", 10, "bold"),
+            bg=self.colors['accent_green'], fg=self.colors['text_dark'],
+            font=("Arial", 10, "bold"),
             relief=tk.FLAT, padx=15, pady=5
         )
         export_btn.pack(side=tk.LEFT, padx=5, pady=10)
         
         # Video info label
         self.info_label = tk.Label(
-            toolbar, text="No video loaded", bg="#3c3c3c", fg="white",
+            toolbar, text="No video loaded",
+            bg=self.colors['bg_medium'], fg=self.colors['text_light'],
             font=("Arial", 10)
         )
         self.info_label.pack(side=tk.RIGHT, padx=10)
@@ -122,16 +139,17 @@ class VideoEditor:
         # Placeholder text
         self.canvas.create_text(
             400, 250, text="Open a video to start editing",
-            fill="#666666", font=("Arial", 16), tags="placeholder"
+            fill=self.colors['text_muted'], font=("Arial", 16), tags="placeholder"
         )
         
     def create_zoom_controls(self):
-        zoom_frame = tk.Frame(self.main_frame, bg="#3c3c3c")
+        zoom_frame = tk.Frame(self.main_frame, bg=self.colors['bg_medium'])
         zoom_frame.pack(fill=tk.X, pady=(0, 10))
         
         # Zoom text label
         zoom_text_label = tk.Label(
-            zoom_frame, text="Zoom:", bg="#3c3c3c", fg="white",
+            zoom_frame, text="Zoom:",
+            bg=self.colors['bg_medium'], fg=self.colors['text_light'],
             font=("Arial", 10)
         )
         zoom_text_label.pack(side=tk.LEFT, padx=10, pady=5)
@@ -139,17 +157,19 @@ class VideoEditor:
         # Zoom out button
         zoom_out_btn = tk.Button(
             zoom_frame, text="-", command=self.zoom_out,
-            bg="#555555", fg="white", font=("Arial", 12, "bold"),
+            bg=self.colors['bg_light'], fg=self.colors['text_dark'],
+            font=("Arial", 12, "bold"),
             width=3, relief=tk.FLAT
         )
         zoom_out_btn.pack(side=tk.LEFT, padx=2)
         
-        # Zoom slider - using tk.Scale instead of ttk.Scale for better control
+        # Zoom slider
         self.zoom_slider = tk.Scale(
             zoom_frame, from_=10, to=500, orient=tk.HORIZONTAL,
             length=200, command=self.on_zoom_slider,
-            bg="#3c3c3c", fg="white", highlightthickness=0,
-            troughcolor="#555555", showvalue=False
+            bg=self.colors['bg_medium'], fg=self.colors['text_light'],
+            highlightthickness=0,
+            troughcolor=self.colors['bg_light'], showvalue=False
         )
         self.zoom_slider.set(100)
         self.zoom_slider.pack(side=tk.LEFT, padx=5)
@@ -157,14 +177,16 @@ class VideoEditor:
         # Zoom in button
         zoom_in_btn = tk.Button(
             zoom_frame, text="+", command=self.zoom_in,
-            bg="#555555", fg="white", font=("Arial", 12, "bold"),
+            bg=self.colors['bg_light'], fg=self.colors['text_dark'],
+            font=("Arial", 12, "bold"),
             width=3, relief=tk.FLAT
         )
         zoom_in_btn.pack(side=tk.LEFT, padx=2)
         
         # Zoom percentage label
         self.zoom_level_label = tk.Label(
-            zoom_frame, text="100%", bg="#3c3c3c", fg="white",
+            zoom_frame, text="100%",
+            bg=self.colors['bg_medium'], fg=self.colors['text_light'],
             font=("Arial", 10), width=6
         )
         self.zoom_level_label.pack(side=tk.LEFT, padx=10)
@@ -172,7 +194,8 @@ class VideoEditor:
         # Reset zoom button
         reset_btn = tk.Button(
             zoom_frame, text="Reset", command=self.reset_zoom,
-            bg="#666666", fg="white", font=("Arial", 9),
+            bg=self.colors['btn_gray'], fg=self.colors['text_dark'],
+            font=("Arial", 9),
             relief=tk.FLAT, padx=10
         )
         reset_btn.pack(side=tk.LEFT, padx=5)
@@ -180,60 +203,68 @@ class VideoEditor:
         # Fit to window button
         fit_btn = tk.Button(
             zoom_frame, text="Fit", command=self.fit_to_window,
-            bg="#666666", fg="white", font=("Arial", 9),
+            bg=self.colors['btn_gray'], fg=self.colors['text_dark'],
+            font=("Arial", 9),
             relief=tk.FLAT, padx=10
         )
         fit_btn.pack(side=tk.LEFT, padx=5)
         
         # Zoom presets
         presets_label = tk.Label(
-            zoom_frame, text="Presets:", bg="#3c3c3c", fg="white",
+            zoom_frame, text="Presets:",
+            bg=self.colors['bg_medium'], fg=self.colors['text_light'],
             font=("Arial", 9)
         )
         presets_label.pack(side=tk.LEFT, padx=(20, 5))
         
+        # FIXED: Changed fg from text_light to text_dark
+        # Also changed bg from btn_dark to bg_light for better readability
         for preset in [50, 100, 150, 200]:
             btn = tk.Button(
                 zoom_frame, text=f"{preset}%",
                 command=lambda p=preset: self.set_zoom_percent(p),
-                bg="#444444", fg="white", font=("Arial", 8),
+                bg=self.colors['bg_light'], fg=self.colors['text_dark'],
+                font=("Arial", 8),
                 relief=tk.FLAT, padx=5
             )
             btn.pack(side=tk.LEFT, padx=2)
         
     def create_playback_controls(self):
         # Timeline frame
-        timeline_frame = tk.Frame(self.main_frame, bg="#3c3c3c")
+        timeline_frame = tk.Frame(self.main_frame, bg=self.colors['bg_medium'])
         timeline_frame.pack(fill=tk.X, pady=(0, 5))
         
-        # Timeline slider - using tk.Scale instead of ttk.Scale
+        # Timeline slider
         self.timeline_slider = tk.Scale(
             timeline_frame, from_=0, to=100, orient=tk.HORIZONTAL,
             command=self.on_timeline_seek,
-            bg="#3c3c3c", fg="white", highlightthickness=0,
-            troughcolor="#555555", showvalue=False, length=800
+            bg=self.colors['bg_medium'], fg=self.colors['text_light'],
+            highlightthickness=0,
+            troughcolor=self.colors['bg_light'], showvalue=False, length=800
         )
         self.timeline_slider.pack(fill=tk.X, padx=10, pady=5)
         
         # Controls frame
-        controls_frame = tk.Frame(self.main_frame, bg="#3c3c3c")
+        controls_frame = tk.Frame(self.main_frame, bg=self.colors['bg_medium'])
         controls_frame.pack(fill=tk.X)
         
         # Time label
         self.time_label = tk.Label(
             controls_frame, text="00:00:00 / 00:00:00",
-            bg="#3c3c3c", fg="white", font=("Arial", 10)
+            bg=self.colors['bg_medium'], fg=self.colors['text_light'],
+            font=("Arial", 10)
         )
         self.time_label.pack(side=tk.LEFT, padx=10, pady=10)
         
         # Center buttons frame
-        btn_frame = tk.Frame(controls_frame, bg="#3c3c3c")
+        btn_frame = tk.Frame(controls_frame, bg=self.colors['bg_medium'])
         btn_frame.pack(expand=True)
         
         # Previous frame button
         prev_btn = tk.Button(
             btn_frame, text="<<", command=self.prev_frame,
-            bg="#555555", fg="white", font=("Arial", 12),
+            bg=self.colors['bg_light'], fg=self.colors['text_dark'],
+            font=("Arial", 12),
             width=3, relief=tk.FLAT
         )
         prev_btn.pack(side=tk.LEFT, padx=2)
@@ -241,7 +272,8 @@ class VideoEditor:
         # Step back button
         step_back_btn = tk.Button(
             btn_frame, text="-10", command=lambda: self.step_frames(-10),
-            bg="#555555", fg="white", font=("Arial", 10),
+            bg=self.colors['bg_light'], fg=self.colors['text_dark'],
+            font=("Arial", 10),
             width=4, relief=tk.FLAT
         )
         step_back_btn.pack(side=tk.LEFT, padx=2)
@@ -249,7 +281,8 @@ class VideoEditor:
         # Play/Pause button
         self.play_btn = tk.Button(
             btn_frame, text="Play", command=self.toggle_play,
-            bg="#4a9eff", fg="white", font=("Arial", 10, "bold"),
+            bg=self.colors['accent_blue'], fg=self.colors['text_dark'],
+            font=("Arial", 10, "bold"),
             width=6, relief=tk.FLAT
         )
         self.play_btn.pack(side=tk.LEFT, padx=5)
@@ -257,7 +290,8 @@ class VideoEditor:
         # Step forward button
         step_fwd_btn = tk.Button(
             btn_frame, text="+10", command=lambda: self.step_frames(10),
-            bg="#555555", fg="white", font=("Arial", 10),
+            bg=self.colors['bg_light'], fg=self.colors['text_dark'],
+            font=("Arial", 10),
             width=4, relief=tk.FLAT
         )
         step_fwd_btn.pack(side=tk.LEFT, padx=2)
@@ -265,7 +299,8 @@ class VideoEditor:
         # Next frame button
         next_btn = tk.Button(
             btn_frame, text=">>", command=self.next_frame,
-            bg="#555555", fg="white", font=("Arial", 12),
+            bg=self.colors['bg_light'], fg=self.colors['text_dark'],
+            font=("Arial", 12),
             width=3, relief=tk.FLAT
         )
         next_btn.pack(side=tk.LEFT, padx=2)
@@ -273,7 +308,8 @@ class VideoEditor:
         # Frame counter
         self.frame_label = tk.Label(
             controls_frame, text="Frame: 0 / 0",
-            bg="#3c3c3c", fg="white", font=("Arial", 10)
+            bg=self.colors['bg_medium'], fg=self.colors['text_light'],
+            font=("Arial", 10)
         )
         self.frame_label.pack(side=tk.RIGHT, padx=10, pady=10)
         
