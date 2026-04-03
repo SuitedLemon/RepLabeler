@@ -108,6 +108,7 @@ class VideoPoseLabellerApp:
         self.frame_info_var = tk.StringVar(value="Frame: - / -")
         self.current_layout: str = "default"
         self._segment_end: int = 0          # used by _segment_play_loop
+        self._unsaved_changes: bool = False
 
         # Build the UI widgets
         self._build_ui()
@@ -825,13 +826,25 @@ class VideoPoseLabellerApp:
             )
             return
 
-        primary_json_path = json_files[0]
-        try:
-            with primary_json_path.open("r", encoding="utf-8") as handle:
-                primary_data = json.load(handle)
-        except json.JSONDecodeError as exc:
+        # Find the first JSON file whose top-level structure is a dict
+        primary_json_path = None
+        primary_data = None
+        for candidate in json_files:
+            try:
+                with candidate.open("r", encoding="utf-8") as handle:
+                    loaded = json.load(handle)
+                if isinstance(loaded, dict):
+                    primary_json_path = candidate
+                    primary_data = loaded
+                    break
+            except json.JSONDecodeError:
+                continue
+
+        if primary_data is None or primary_json_path is None:
             messagebox.showerror(
-                "Invalid JSON", f"Failed to parse {primary_json_path.name}: {exc}"
+                "Invalid JSON",
+                "No valid JSON object (dict) found in the selected sample folder.\n"
+                "All JSON files either failed to parse or contain a list at the top level."
             )
             return
 
@@ -850,7 +863,17 @@ class VideoPoseLabellerApp:
 
         self.binary_label = binary_label
         self.state_sequence = self._build_state_sequence(binary_label)
-        self.sample_json_paths = json_files
+
+        # Only keep JSON files whose top-level structure is a dict
+        self.sample_json_paths = []
+        for jf in json_files:
+            try:
+                with jf.open("r", encoding="utf-8") as f:
+                    d = json.load(f)
+                if isinstance(d, dict):
+                    self.sample_json_paths.append(jf)
+            except Exception:
+                continue
 
         video_path = self._resolve_video_path(primary_data, sample)
         if video_path is None or not video_path.exists():
@@ -888,12 +911,13 @@ class VideoPoseLabellerApp:
         self._update_annotation_view()
         self._refresh_binary_label_display()
         self._update_buttons()
+        self._unsaved_changes = False
+        self._mark_saved()
 
-        # Re-enforce the portrait geometry after all label content
-        # has updated — prevents variable-length text from shifting
-        # the window size.
         if self.current_layout == "vertical":
             self.root.after_idle(self._reapply_vertical_geometry)
+
+        self.root.after(150, self._update_buttons)
 
     def _reapply_vertical_geometry(self) -> None:
         """Re-lock the window to the correct 9:16 portrait geometry after
@@ -1001,11 +1025,11 @@ class VideoPoseLabellerApp:
             return
         item = selection[0]
         values = self.annotation_tree.item(item, "values")
-        if not values or len(values) < 3:
+        if not values or len(values) < 4:
             return
-        start_frame = int(values[0])
-        end_frame = int(values[1])
-        label = values[2]
+        start_frame = int(values[1])
+        end_frame   = int(values[2])
+        label       = values[3]
         if label == "finish":
             messagebox.showinfo(
                 "Cannot edit", "The 'finish' segment is automatically managed."
@@ -1013,7 +1037,11 @@ class VideoPoseLabellerApp:
             return
         segment_index = None
         for i, seg in enumerate(self.recorded_segments):
-            if seg.start == start_frame and seg.end == end_frame and seg.label == label:
+            if (
+                seg.start == start_frame
+                and seg.end == end_frame
+                and seg.label == label
+            ):
                 segment_index = i
                 break
         if segment_index is None:
@@ -1025,12 +1053,13 @@ class VideoPoseLabellerApp:
         if dialog.result:
             new_start, new_end, new_label = dialog.result
             self.recorded_segments[segment_index].start = new_start
-            self.recorded_segments[segment_index].end = new_end
+            self.recorded_segments[segment_index].end   = new_end
             self.recorded_segments[segment_index].label = new_label
             self.recorded_segments.sort(key=lambda seg: seg.start)
             self._update_annotation_view()
             self._refresh_binary_label_display()
             self.status_var.set("Annotation updated")
+            self._mark_unsaved()
 
     def delete_selected_annotation(self) -> None:
         selection = self.annotation_tree.selection()
@@ -1041,11 +1070,11 @@ class VideoPoseLabellerApp:
             return
         item = selection[0]
         values = self.annotation_tree.item(item, "values")
-        if not values or len(values) < 3:
+        if not values or len(values) < 4:
             return
-        start_frame = int(values[0])
-        end_frame = int(values[1])
-        label = values[2]
+        start_frame = int(values[1])
+        end_frame   = int(values[2])
+        label       = values[3]
         if label == "finish":
             messagebox.showinfo(
                 "Cannot delete", "The 'finish' segment cannot be deleted."
@@ -1078,6 +1107,7 @@ class VideoPoseLabellerApp:
         self._refresh_binary_label_display()
         self._update_buttons()
         self.status_var.set("Annotation deleted")
+        self._mark_unsaved()
 
     def insert_segment(self) -> None:
         if not self.capture or not self.state_sequence:
@@ -1098,6 +1128,7 @@ class VideoPoseLabellerApp:
             self._update_annotation_view()
             self._refresh_binary_label_display()
             self.status_var.set("Segment inserted")
+            self._mark_unsaved()
 
     # ------------------------------------------------------------------
     # Build aggregated video_config.json
@@ -1595,6 +1626,7 @@ class VideoPoseLabellerApp:
         self._update_annotation_view()
         self._refresh_binary_label_display()
         self._update_buttons()
+        self._mark_unsaved()
 
     def undo_last_mark(self) -> None:
         if self.current_state_index == 0:
@@ -1608,6 +1640,7 @@ class VideoPoseLabellerApp:
         self._update_annotation_view()
         self._refresh_binary_label_display()
         self._update_buttons()
+        self._mark_unsaved()
 
     def clear_annotations(self) -> None:
         if not self.state_sequence:
@@ -1625,6 +1658,7 @@ class VideoPoseLabellerApp:
         self._update_annotation_view()
         self._refresh_binary_label_display()
         self._update_buttons()
+        self._mark_unsaved()
 
     # ------------------------------------------------------------------
     # UI updates
@@ -1668,38 +1702,38 @@ class VideoPoseLabellerApp:
 
         self.play_button.config(state="normal" if has_video else "disabled")
 
-        # Show the right marking buttons by adding/removing from the
-        # WrapFrame's managed-children list and hiding via place_forget.
         manual_btns = [
             self.mark_prep_button, self.mark_rep_button,
             self.mark_norep_button, self.mark_finish_button,
         ]
 
         if self.new_video_mode and not self.binary_label:
-            # Hide the state-sequence button
-            self.mark_button.place_forget()
+            # --- Manual segment mode ---
+            # Remove mark_button from wrap children and hide it
             if self.mark_button in self._ctrl_wrap._children:
                 self._ctrl_wrap._children.remove(self.mark_button)
-            # Ensure manual buttons are in the wrap list
+            self.mark_button.place_forget()
+
+            # Insert manual buttons before undo if not already present
             for btn in manual_btns:
                 if btn not in self._ctrl_wrap._children:
                     idx = self._ctrl_wrap._children.index(self.undo_button)
                     self._ctrl_wrap._children.insert(idx, btn)
+
         else:
-            # Hide manual buttons
+            # --- State sequence mode ---
+            # Remove and hide all manual buttons
             for btn in manual_btns:
-                btn.place_forget()
                 if btn in self._ctrl_wrap._children:
                     self._ctrl_wrap._children.remove(btn)
-            # Ensure mark_button is in the wrap list
+                btn.place_forget()
+
+            # Re-insert mark_button before undo if missing
             if self.mark_button not in self._ctrl_wrap._children:
                 idx = self._ctrl_wrap._children.index(self.undo_button)
                 self._ctrl_wrap._children.insert(idx, self.mark_button)
 
-        # Trigger a reflow so the visible buttons re-pack immediately
-        self._ctrl_wrap.update_idletasks()
-        self._ctrl_wrap._reflow(self._ctrl_wrap.winfo_width())
-
+        # Configure button states
         self.mark_button.config(
             state="normal" if can_mark else "disabled"
         )
@@ -1724,6 +1758,30 @@ class VideoPoseLabellerApp:
         self.save_button.config(
             state="normal" if can_save else "disabled"
         )
+
+        # Defer the reflow until Tkinter has finished resolving all widget
+        # geometries — this prevents winfo_width() returning a stale value
+        # (often 1) which caused _reflow to exit early and leave buttons hidden.
+        def _deferred_reflow(attempt: int = 0) -> None:
+            """Try to reflow the wrap frame, retrying up to 20 times at
+            20 ms intervals until a real width is available."""
+            self._ctrl_wrap.update_idletasks()
+            w = self._ctrl_wrap.winfo_width()
+
+            # Fall back to parent widths if wrap frame isn't sized yet
+            if w <= 1:
+                w = self.controls_panel.winfo_width()
+            if w <= 1:
+                w = self.root.winfo_width()
+
+            if w <= 1:
+                if attempt < 20:
+                    self.root.after(20, lambda: _deferred_reflow(attempt + 1))
+                return
+
+            self._ctrl_wrap._reflow(w)
+
+        self.root.after_idle(lambda: _deferred_reflow(0))
 
     # ------------------------------------------------------------------
     # New video loading functionality
@@ -1763,6 +1821,10 @@ class VideoPoseLabellerApp:
         self._update_annotation_view()
         self._refresh_binary_label_display()
         self._update_buttons()
+
+        # Guaranteed settled reflow after the info dialog is dismissed
+        self.root.after(150, self._update_buttons)
+
         messagebox.showinfo(
             "New video loaded",
             "You can now either:\n\n"
@@ -1793,6 +1855,7 @@ class VideoPoseLabellerApp:
         self._refresh_binary_label_display()
         self._update_buttons()
         self.status_var.set(f"Added {label} segment: {start_frame}-{end_frame}")
+        self._mark_unsaved()
         if label == "finish":
             self._derive_binary_from_segments()
 
@@ -1856,7 +1919,7 @@ class VideoPoseLabellerApp:
                 "video_path": f"CFRep/CFRep/{new_video_name}",
                 "dataset_type": "CocoDataset",
                 "exercise_type": exercise.upper().replace("_", "_"),
-                "binary_label": self.binary_label,  # may be "" — that is fine
+                "binary_label": self.binary_label,
                 "frames": [],
                 "annotations": [seg.as_dict() for seg in self.recorded_segments],
             }
@@ -1870,6 +1933,7 @@ class VideoPoseLabellerApp:
                 f"JSON created: {json_path.name}\n"
                 f"Video configs updated.",
             )
+            self._mark_saved()
             self.new_video_mode = False
             self.new_video_path = None
         except Exception as e:
@@ -1933,56 +1997,108 @@ class VideoPoseLabellerApp:
 
         dialog.wait_window()
         return result[0]
+    
+    def _sync_video_config_for_existing(
+        self, json_data: dict, json_path: Path
+    ) -> None:
+        """Update video_config.json (and .csv) after saving an existing
+        sample's annotations.
+
+        Derives the filename and exercise name from the saved JSON data
+        and the path on disk, then delegates to _update_video_configs.
+        """
+        if not self.json_root:
+            return
+
+        # Derive the video filename from the saved data, falling back to
+        # the sample directory name if video_path is absent.
+        video_path_val = json_data.get("video_path")
+        if video_path_val:
+            filename = Path(str(video_path_val)).name
+        else:
+            # json_path is  …/json_keypoints/<exercise>/<sample>/<file>.json
+            # so the sample folder name makes a reasonable fallback filename
+            filename = json_path.parent.name + ".mp4"
+
+        # Derive the exercise name from the folder two levels above the JSON
+        # i.e.  json_keypoints / <exercise> / <sample> / file.json
+        try:
+            exercise = json_path.parent.parent.name
+        except Exception:
+            exercise = json_data.get("exercise_type", "unknown")
+
+        try:
+            self._update_video_configs(filename, exercise, json_data)
+            self.status_var.set(
+                self.status_var.get() + " | video_config.json updated"
+            )
+        except Exception as e:
+            print(f"Warning: failed to update video_config.json: {e}")
 
     def _save_existing_annotations(self) -> None:
         if not self.sample_json_paths:
             messagebox.showerror("No files", "No JSON files loaded to save to.")
             return
 
-        # Ask the user how they want to save
         save_choice = self._ask_save_mode()
         if save_choice is None:
-            # User cancelled
             return
 
         annotations = [seg.as_dict() for seg in self.recorded_segments]
 
         if save_choice == "overwrite":
-            # Write annotations back into every existing JSON file for this sample
             success_count = 0
+            skipped_count = 0
+            saved_data    = None
+            saved_path    = None
+
             for json_path in self.sample_json_paths:
                 try:
                     with json_path.open("r", encoding="utf-8") as f:
                         data = json.load(f)
-                    data["annotations"] = annotations
+                    if not isinstance(data, dict):
+                        skipped_count += 1
+                        continue
+                    data["annotations"]  = annotations
                     data["binary_label"] = self.binary_label
                     with json_path.open("w", encoding="utf-8") as f:
                         json.dump(data, f, indent=2)
                     success_count += 1
+                    # Keep a reference to the first successfully saved
+                    # file so we can update video_config.json afterwards
+                    if saved_data is None:
+                        saved_data = data
+                        saved_path = json_path
                 except Exception:
+                    skipped_count += 1
                     continue
+
             if success_count > 0:
+                # --- Sync video_config.json ---
+                if saved_data is not None and saved_path is not None:
+                    self._sync_video_config_for_existing(saved_data, saved_path)
+
+                msg = f"Saved annotations to {success_count} JSON file(s)."
+                if skipped_count:
+                    msg += f"\n({skipped_count} file(s) skipped — not a valid dict)"
                 self.status_var.set(f"Annotations saved to {success_count} files")
-                messagebox.showinfo(
-                    "Save complete",
-                    f"Saved annotations to {success_count} JSON file(s).",
-                )
+                messagebox.showinfo("Save complete", msg)
+                self._mark_saved()
             else:
                 messagebox.showerror(
-                    "Save failed", "Failed to save annotations to any files."
+                    "Save failed",
+                    "Failed to save annotations to any files.\n"
+                    "All target files may be invalid or inaccessible."
                 )
 
         elif save_choice == "new":
-            # Let the user pick a destination folder and filename
             dest_dir = filedialog.askdirectory(
                 title="Select folder to save new annotation file"
             )
             if not dest_dir:
                 return
             dest_dir = Path(dest_dir)
-
-            # Suggest a filename based on the original, with a suffix
-            original_name = self.sample_json_paths[0].stem
+            original_name  = self.sample_json_paths[0].stem
             suggested_name = f"{original_name}_copy.json"
             new_filename = simpledialog.askstring(
                 "New filename",
@@ -1994,73 +2110,131 @@ class VideoPoseLabellerApp:
                 return
             if not new_filename.endswith(".json"):
                 new_filename += ".json"
-
             new_path = dest_dir / new_filename
             if new_path.exists():
                 if not messagebox.askyesno(
                     "File exists",
-                    f"{new_filename} already exists in that folder. Overwrite it?",
+                    f"{new_filename} already exists. Overwrite it?",
                 ):
                     return
-
-            # Build the new JSON by copying the primary sample data
             try:
                 with self.sample_json_paths[0].open("r", encoding="utf-8") as f:
                     data = json.load(f)
-                data["annotations"] = annotations
+                if not isinstance(data, dict):
+                    messagebox.showerror(
+                        "Invalid source",
+                        "The source JSON file does not contain a valid object."
+                    )
+                    return
+                data["annotations"]  = annotations
                 data["binary_label"] = self.binary_label
                 with new_path.open("w", encoding="utf-8") as f:
                     json.dump(data, f, indent=2)
-                self.status_var.set(f"Annotations saved as new file: {new_filename}")
-                messagebox.showinfo(
-                    "Save complete",
-                    f"New annotation file saved:\n{new_path}",
+
+                # --- Sync video_config.json for the new file too ---
+                self._sync_video_config_for_existing(data, new_path)
+
+                self.status_var.set(
+                    f"Annotations saved as new file: {new_filename}"
                 )
+                messagebox.showinfo(
+                    "Save complete", f"New annotation file saved:\n{new_path}"
+                )
+                self._mark_saved()
             except Exception as e:
                 messagebox.showerror("Save error", f"Failed to save new file: {e}")
 
     def _update_video_configs(
         self, filename: str, exercise: str, json_data: dict
     ) -> None:
+        """Upsert the entry for *filename* in video_config.json and
+        update the matching row in video_config.csv."""
         if not self.json_root:
             return
-        config_dir = self.json_root.parent
-        json_config_path = config_dir / "video_config.json"
-        try:
-            if json_config_path.exists():
+
+        config_dir        = self.json_root.parent
+        json_config_path  = config_dir / "video_config.json"
+        csv_config_path   = config_dir / "video_config.csv"
+
+        segments  = json_data.get("annotations", [])
+        rep_count = sum(1 for s in segments if s.get("label") == "rep")
+
+        new_entry = {
+            "filename":     filename,
+            "exercise":     exercise,
+            "binary_label": json_data.get("binary_label", ""),
+            "rep_count":    rep_count,
+            "segments":     segments,
+        }
+
+        # ------------------------------------------------------------------
+        # JSON config — find-and-replace by filename, or append if new
+        # ------------------------------------------------------------------
+        config_list: list[dict] = []
+        if json_config_path.exists():
+            try:
                 with json_config_path.open("r", encoding="utf-8") as f:
-                    config_list = json.load(f)
-            else:
-                config_list = []
-            segments = json_data.get("annotations", [])
-            rep_count = sum(1 for s in segments if s.get("label") == "rep")
-            new_entry = {
-                "filename": filename,
-                "exercise": exercise,
-                "binary_label": json_data.get("binary_label", ""),
-                "rep_count": rep_count,
-                "segments": segments,
-            }
-            config_list.append(new_entry)
-            config_list.sort(key=lambda x: x.get("filename", ""))
+                    loaded = json.load(f)
+                if isinstance(loaded, list):
+                    config_list = loaded
+            except Exception as e:
+                print(f"Warning: could not read video_config.json: {e}")
+
+        # Look for an existing entry with the same filename
+        updated = False
+        for i, entry in enumerate(config_list):
+            if entry.get("filename") == filename:
+                config_list[i] = new_entry   # replace in-place
+                updated = True
+                break
+
+        if not updated:
+            config_list.append(new_entry)    # new file — add it
+
+        # Always keep the list sorted by filename for readability
+        config_list.sort(key=lambda x: x.get("filename", ""))
+
+        try:
+            json_config_path.parent.mkdir(parents=True, exist_ok=True)
             with json_config_path.open("w", encoding="utf-8") as f:
                 json.dump(config_list, f, indent=2)
         except Exception as e:
-            print(f"Failed to update video_config.json: {e}")
-        csv_config_path = config_dir / "video_config.csv"
+            print(f"Failed to write video_config.json: {e}")
+
+        # ------------------------------------------------------------------
+        # CSV config — rewrite the matching row (or append if not found)
+        # ------------------------------------------------------------------
+        csv_line = (
+            f"{filename},{exercise},{rep_count},"
+            f"{json_data.get('binary_label', '')}\n"
+        )
+
+        existing_rows: list[str] = []
+        if csv_config_path.exists():
+            try:
+                with csv_config_path.open("r", encoding="utf-8") as f:
+                    existing_rows = f.readlines()
+            except Exception as e:
+                print(f"Warning: could not read video_config.csv: {e}")
+
+        # Replace the row whose first field matches filename
+        new_rows: list[str] = []
+        row_updated = False
+        for row in existing_rows:
+            if row.startswith(f"{filename},"):
+                new_rows.append(csv_line)
+                row_updated = True
+            else:
+                new_rows.append(row)
+
+        if not row_updated:
+            new_rows.append(csv_line)
+
         try:
-            rep_count = sum(
-                1 for s in json_data.get("annotations", [])
-                if s.get("label") == "rep"
-            )
-            csv_line = (
-                f"{filename},{exercise},{rep_count},"
-                f"{json_data.get('binary_label', '')}\n"
-            )
-            with csv_config_path.open("a", encoding="utf-8") as f:
-                f.write(csv_line)
+            with csv_config_path.open("w", encoding="utf-8") as f:
+                f.writelines(new_rows)
         except Exception as e:
-            print(f"Failed to update video_config.csv: {e}")
+            print(f"Failed to write video_config.csv: {e}")
 
     # ------------------------------------------------------------------
     # Resource management
@@ -2079,10 +2253,41 @@ class VideoPoseLabellerApp:
         self.frame_info_var.set("Frame: - / -")
 
     def on_close(self) -> None:
+        if self._unsaved_changes and self.recorded_segments:
+            response = messagebox.askyesnocancel(
+                "Unsaved changes",
+                "You have unsaved annotation changes.\n\n"
+                "Do you want to save before exiting?",
+                parent=self.root,
+            )
+            if response is None:
+                # Cancel — do not close
+                return
+            if response:
+                # Yes — attempt save, only close if save completes
+                self.save_annotations()
+                # If segments still flagged dirty the save was cancelled
+                if self._unsaved_changes:
+                    return
         self.pause_video()
         self.close_video()
         self.root.destroy()
 
+    def _mark_unsaved(self) -> None:
+        """Call whenever annotations are modified but not yet saved."""
+        self._unsaved_changes = True
+        # Reflect dirty state in the window title
+        title = self.root.title()
+        if not title.startswith("* "):
+            self.root.title(f"* {title}")
+
+    def _mark_saved(self) -> None:
+        """Call after a successful save to clear the dirty flag."""
+        self._unsaved_changes = False
+        # Remove the dirty asterisk from the window title
+        title = self.root.title()
+        if title.startswith("* "):
+            self.root.title(title[2:])
 
 # ======================================================================
 # Dialog classes
