@@ -109,6 +109,7 @@ class VideoPoseLabellerApp:
         self.current_layout: str = "default"
         self._segment_end: int = 0          # used by _segment_play_loop
         self._unsaved_changes: bool = False
+        self._last_browse_dir: Optional[str] = None
 
         # Build the UI widgets
         self._build_ui()
@@ -755,9 +756,14 @@ class VideoPoseLabellerApp:
     # Folder and sample selection
     # ------------------------------------------------------------------
     def choose_json_root(self) -> None:
-        selected = filedialog.askdirectory(title="Select json_keypoints folder")
+        selected = filedialog.askdirectory(
+            title="Select json_keypoints folder",
+            initialdir=self._last_browse_dir,
+        )
         if not selected:
             return
+        # Remember this folder for next time
+        self._last_browse_dir = str(Path(selected).parent)
         self.set_json_root(Path(selected))
 
     def set_json_root(self, path: Path) -> None:
@@ -1810,6 +1816,7 @@ class VideoPoseLabellerApp:
     def load_new_video(self) -> None:
         video_path = filedialog.askopenfilename(
             title="Select video file",
+            initialdir=self._last_browse_dir,
             filetypes=[
                 ("Video files", "*.mp4 *.avi *.mov *.mkv *.wmv *.flv"),
                 ("All files", "*.*"),
@@ -1823,6 +1830,10 @@ class VideoPoseLabellerApp:
                 "Video not found", f"Video file not found: {video_path}"
             )
             return
+
+        # Remember the folder this video came from for next time
+        self._last_browse_dir = str(video_path.parent)
+
         self.pause_video()
         self.close_video()
         if not self._open_video(video_path):
@@ -1843,7 +1854,6 @@ class VideoPoseLabellerApp:
         self._refresh_binary_label_display()
         self._update_buttons()
 
-        # Guaranteed settled reflow after the info dialog is dismissed
         self.root.after(150, self._update_buttons)
 
         messagebox.showinfo(
@@ -2428,7 +2438,7 @@ class VideoPoseLabellerApp:
                 self._mark_saved()
             except Exception as e:
                 messagebox.showerror("Save error", f"Failed to save new file: {e}")
-                
+
     def deduplicate_video_configs(self) -> None:
         """Scan video_config.json and video_config.csv for duplicate
         filename entries and remove them, keeping only the last
