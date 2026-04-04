@@ -718,8 +718,17 @@ class VideoPoseLabellerApp:
     # Binary label display helper
     # ------------------------------------------------------------------
     def _refresh_binary_label_display(self) -> None:
-        """Recompute and display the binary label from current segments,
-        keep self.binary_label in sync, and update the rep/no-rep count."""
+        """Recompute and display the binary label from current segments.
+
+        In new_video_mode:
+        - self.binary_label is only committed when 'finish' is present
+          in the recorded segments (annotation is considered complete).
+        - If no finish segment exists, self.binary_label is cleared back
+          to "" so the manual button set stays visible.
+
+        In normal sample mode:
+        - self.binary_label is always kept in sync with the segments.
+        """
         middle = [
             seg for seg in self.recorded_segments
             if seg.label in ("rep", "no-rep")
@@ -727,16 +736,17 @@ class VideoPoseLabellerApp:
         middle.sort(key=lambda s: s.start)
 
         if middle:
-            derived = "".join("1" if s.label == "rep" else "0" for s in middle)
-            rep_count = sum(1 for s in middle if s.label == "rep")
+            derived      = "".join("1" if s.label == "rep" else "0" for s in middle)
+            rep_count    = sum(1 for s in middle if s.label == "rep")
             no_rep_count = sum(1 for s in middle if s.label == "no-rep")
             self.rep_count_var.set(
                 f"({rep_count} rep{'s' if rep_count != 1 else ''}, "
                 f"{no_rep_count} no-rep{'s' if no_rep_count != 1 else ''})"
             )
-        elif self.binary_label:
-            derived = self.binary_label
-            rep_count = self.binary_label.count("1")
+        elif self.binary_label and not self.new_video_mode:
+            # Normal mode only — show the pre-loaded binary label as fallback
+            derived      = self.binary_label
+            rep_count    = self.binary_label.count("1")
             no_rep_count = self.binary_label.count("0")
             self.rep_count_var.set(
                 f"({rep_count} rep{'s' if rep_count != 1 else ''}, "
@@ -746,9 +756,22 @@ class VideoPoseLabellerApp:
             derived = "—"
             self.rep_count_var.set("")
 
-        # Keep internal binary_label in sync with what is displayed
-        if derived != "—":
-            self.binary_label = derived
+        if self.new_video_mode:
+            # Only commit binary_label when a finish segment is present —
+            # this is the signal that annotation is complete.
+            has_finish = any(
+                seg.label == "finish" for seg in self.recorded_segments
+            )
+            if has_finish and derived != "—":
+                self.binary_label = derived
+            else:
+                # No finish segment means annotation is still in progress —
+                # clear binary_label so the manual button set stays visible.
+                self.binary_label = ""
+        else:
+            # Normal sample mode — always keep binary_label in sync.
+            if derived != "—":
+                self.binary_label = derived
 
         self.binary_label_var.set(derived)
 
@@ -1054,14 +1077,11 @@ class VideoPoseLabellerApp:
         values = self.annotation_tree.item(item, "values")
         if not values or len(values) < 4:
             return
+        # values[0]=▶  values[1]=start  values[2]=end  values[3]=label
         start_frame = int(values[1])
         end_frame   = int(values[2])
         label       = values[3]
-        if label == "finish":
-            messagebox.showinfo(
-                "Cannot edit", "The 'finish' segment is automatically managed."
-            )
-            return
+
         segment_index = None
         for i, seg in enumerate(self.recorded_segments):
             if (
@@ -1099,20 +1119,18 @@ class VideoPoseLabellerApp:
         values = self.annotation_tree.item(item, "values")
         if not values or len(values) < 4:
             return
+        # values[0]=▶  values[1]=start  values[2]=end  values[3]=label
         start_frame = int(values[1])
         end_frame   = int(values[2])
         label       = values[3]
-        if label == "finish":
-            messagebox.showinfo(
-                "Cannot delete", "The 'finish' segment cannot be deleted."
-            )
-            return
+
         response = messagebox.askyesno(
             "Delete segment",
             f"Delete segment '{label}' ({start_frame}-{end_frame})?"
         )
         if not response:
             return
+
         for i, seg in enumerate(self.recorded_segments):
             if (
                 seg.start == start_frame
@@ -1121,6 +1139,7 @@ class VideoPoseLabellerApp:
             ):
                 self.recorded_segments.pop(i)
                 break
+
         self.current_state_index = len(self.recorded_segments)
         self.state_start_frame = (
             0 if not self.recorded_segments
@@ -1131,14 +1150,21 @@ class VideoPoseLabellerApp:
         )
         self._refresh_state_ui()
         self._update_annotation_view()
+        # Refresh binary label BEFORE _update_buttons so self.binary_label
+        # is up to date when _update_buttons checks it for button visibility.
         self._refresh_binary_label_display()
         self._update_buttons()
         self.status_var.set("Annotation deleted")
         self._mark_unsaved()
 
     def insert_segment(self) -> None:
-        if not self.capture or not self.state_sequence:
+        if not self.capture:
             messagebox.showwarning("No video", "Please load a video first.")
+            return
+        # In new_video_mode state_sequence is intentionally empty —
+        # that is not an error condition, so we only block on no video.
+        if not self.state_sequence and not self.new_video_mode:
+            messagebox.showwarning("No sample", "Please load a sample first.")
             return
         dialog = SegmentEditDialog(
             self.root,
@@ -1670,7 +1696,7 @@ class VideoPoseLabellerApp:
         self._mark_unsaved()
 
     def clear_annotations(self) -> None:
-        if not self.state_sequence:
+        if not self.state_sequence and not self.new_video_mode:
             return
         if not messagebox.askyesno(
             "Clear annotations", "Discard all marks for this sample?"
@@ -1679,7 +1705,10 @@ class VideoPoseLabellerApp:
         self.pause_video()
         self.recorded_segments.clear()
         self.current_state_index = 0
-        self.state_start_frame = 0
+        self.state_start_frame   = 0
+        # In new_video_mode reset binary_label so manual buttons reappear.
+        if self.new_video_mode:
+            self.binary_label = ""
         self.seek_to_frame(0)
         self._refresh_state_ui()
         self._update_annotation_view()
@@ -1841,7 +1870,7 @@ class VideoPoseLabellerApp:
             return
         self.new_video_mode = True
         self.new_video_path = video_path
-        self.binary_label = ""
+        self.binary_label = ""  # stays empty until "finish" is marked
         self.state_sequence = []
         self.recorded_segments = []
         self.sample_json_paths = []
@@ -1891,6 +1920,10 @@ class VideoPoseLabellerApp:
             self._derive_binary_from_segments()
 
     def _derive_binary_from_segments(self) -> None:
+        """Derive and commit binary label from manually created segments.
+        Called only when the user marks a 'finish' segment in new_video_mode,
+        at which point the annotation is considered complete and the binary
+        label is locked in."""
         if not self.recorded_segments:
             return
         middle_segments = [
@@ -1899,8 +1932,10 @@ class VideoPoseLabellerApp:
         ]
         middle_segments.sort(key=lambda s: s.start)
         binary_label = "".join(
-            "1" if seg.label == "rep" else "0" for seg in middle_segments
+            "1" if seg.label == "rep" else "0"
+            for seg in middle_segments
         )
+        # Commit the binary label now that annotation is complete
         self.binary_label = binary_label
         self._refresh_binary_label_display()
         self.status_var.set(f"Derived binary label: {binary_label}")
