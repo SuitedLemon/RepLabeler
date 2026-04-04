@@ -1090,7 +1090,7 @@ class VideoPoseLabellerApp:
         self.seek_to_frame(start)
         self._segment_end = end
         self.playing = True
-        self.play_button.configure(text="Pause")
+        self.play_button.configure(text="⏸")
         self._segment_play_loop()
 
     def _segment_play_loop(self) -> None:
@@ -1107,7 +1107,9 @@ class VideoPoseLabellerApp:
             return
         self.current_frame += 1
         self.show_frame(self.current_frame)
-        self.after_id = self.root.after(self.frame_delay_ms, self._segment_play_loop)
+        self.after_id = self.root.after(
+            self.frame_delay_ms, self._segment_play_loop
+        )
 
     def edit_selected_annotation(self) -> None:
         selection = self.annotation_tree.selection()
@@ -1917,7 +1919,7 @@ class VideoPoseLabellerApp:
 
         # Sync undo/redo button states
         self._update_undo_redo_buttons()
-        
+
         # Defer the reflow until Tkinter has finished resolving all widget
         # geometries — this prevents winfo_width() returning a stale value
         # (often 1) which caused _reflow to exit early and leave buttons hidden.
