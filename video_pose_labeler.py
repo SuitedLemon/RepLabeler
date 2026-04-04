@@ -181,6 +181,13 @@ class VideoPoseLabellerApp:
             command=self.load_selected_sample,
         ).grid(row=7, column=0, pady=(10, 0), sticky="ew")
 
+        # NEW — rename the currently loaded sample
+        ttk.Button(
+            self.sidebar,
+            text="Rename sample…",
+            command=self.rename_sample,
+        ).grid(row=8, column=0, pady=(4, 0), sticky="ew")
+
         ttk.Button(
             self.sidebar,
             text="Build video_config.json",
@@ -472,6 +479,10 @@ class VideoPoseLabellerApp:
             label="Load Selected Sample",
             command=self.load_selected_sample,
         )
+        file_menu.add_command(
+            label="Rename Sample…",
+            command=self.rename_sample,
+        )
         file_menu.add_separator()
         file_menu.add_command(
             label="Save Annotations",
@@ -480,6 +491,16 @@ class VideoPoseLabellerApp:
         file_menu.add_command(
             label="Build video_config.json",
             command=self.build_video_config,
+        )
+        file_menu.add_separator()
+        file_menu.add_command(
+            label="Clean duplicate config entries…",
+            command=self.deduplicate_video_configs,
+        )
+        file_menu.add_separator()
+        file_menu.add_command(
+            label="Exit",
+            command=self.on_close,
         )
         file_menu.add_separator()
         file_menu.add_command(
@@ -1874,6 +1895,270 @@ class VideoPoseLabellerApp:
         self._refresh_binary_label_display()
         self.status_var.set(f"Derived binary label: {binary_label}")
 
+    def rename_sample(self) -> None:
+        """Rename the currently loaded sample — its folder, all JSON files
+        inside it, the video file, and every reference inside those JSON
+        files, then update video_config.json / .csv."""
+        if not self.sample_json_paths:
+            messagebox.showwarning(
+                "No sample loaded",
+                "Please load a sample before trying to rename it."
+            )
+            return
+        if not self.json_root:
+            messagebox.showwarning(
+                "No root folder",
+                "Please select a json_keypoints folder first."
+            )
+            return
+
+        # Current sample folder:  json_keypoints/<exercise>/<sample>/
+        sample_dir   = self.sample_json_paths[0].parent
+        exercise_dir = sample_dir.parent
+        old_sample   = sample_dir.name          # e.g. "push_ups_person1_cam1"
+        exercise     = exercise_dir.name        # e.g. "push_ups"
+
+        # Read current video filename from the first JSON so we can
+        # rename the video file and update the path reference.
+        try:
+            with self.sample_json_paths[0].open("r", encoding="utf-8") as f:
+                primary_data = json.load(f)
+        except Exception as e:
+            messagebox.showerror("Read error", f"Could not read sample JSON: {e}")
+            return
+
+        old_video_path_str = primary_data.get("video_path", "")
+        old_video_filename = Path(old_video_path_str).name if old_video_path_str \
+            else f"{old_sample}.mp4"
+
+        # Warn about unsaved changes
+        if self._unsaved_changes:
+            if not messagebox.askyesno(
+                "Unsaved changes",
+                "You have unsaved changes. Renaming will save the current "
+                "annotations as part of the renamed files.\n\nContinue?"
+            ):
+                return
+
+        # Show the rename dialog
+        dialog = SampleRenameDialog(
+            self.root,
+            exercise=exercise,
+            old_sample=old_sample,
+        )
+        if not dialog.result:
+            return
+
+        new_person, new_angle = dialog.result
+        new_sample      = f"{exercise}_{new_person}_{new_angle}"
+        new_video_name  = f"{new_sample}.mp4"
+
+        if new_sample == old_sample:
+            messagebox.showinfo("No change", "The new name is the same as the old name.")
+            return
+
+        new_sample_dir = exercise_dir / new_sample
+
+        if new_sample_dir.exists():
+            messagebox.showerror(
+                "Name conflict",
+                f"A sample named '{new_sample}' already exists.\n"
+                "Please choose a different name."
+            )
+            return
+
+        # ------------------------------------------------------------------
+        # 1. Rename the video file on disk
+        # ------------------------------------------------------------------
+        dataset_root      = self.json_root.parent
+        old_video_abspath = dataset_root / old_video_filename
+        new_video_abspath = dataset_root / new_video_name
+
+        video_renamed = False
+        if old_video_abspath.exists():
+            try:
+                old_video_abspath.rename(new_video_abspath)
+                video_renamed = True
+            except Exception as e:
+                messagebox.showerror(
+                    "Rename error",
+                    f"Could not rename video file:\n{e}"
+                )
+                return
+        else:
+            # Video file not found at expected location — warn but continue
+            messagebox.showwarning(
+                "Video file not found",
+                f"Could not find '{old_video_filename}' at:\n{old_video_abspath}\n\n"
+                "JSON files and config will still be updated."
+            )
+
+        # ------------------------------------------------------------------
+        # 2. Rename each JSON file inside the sample folder and update
+        #    its internal video_path / exercise_type references
+        # ------------------------------------------------------------------
+        updated_json_paths: list[Path] = []
+        annotations = [seg.as_dict() for seg in self.recorded_segments]
+
+        for old_json_path in self.sample_json_paths:
+            try:
+                with old_json_path.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    continue
+
+                # Update internal references
+                data["video_path"]    = f"CFRep/CFRep/{new_video_name}"
+                data["exercise_type"] = exercise.upper()
+                data["binary_label"]  = self.binary_label
+                data["annotations"]   = annotations
+
+                # Derive a new filename by replacing old_sample with new_sample
+                old_stem    = old_json_path.stem    # e.g. push_ups_p1_cam1_minimal
+                new_stem    = old_stem.replace(old_sample, new_sample, 1)
+                new_json_fn = new_stem + ".json"
+
+                # Write to the same folder under the new filename
+                new_json_path = old_json_path.parent / new_json_fn
+                with new_json_path.open("w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+
+                # Remove old file only if new path differs
+                if new_json_path != old_json_path:
+                    old_json_path.unlink()
+
+                updated_json_paths.append(new_json_path)
+
+            except Exception as e:
+                messagebox.showwarning(
+                    "JSON update warning",
+                    f"Could not update {old_json_path.name}:\n{e}"
+                )
+
+        # ------------------------------------------------------------------
+        # 3. Rename the sample folder itself
+        # ------------------------------------------------------------------
+        try:
+            sample_dir.rename(new_sample_dir)
+        except Exception as e:
+            messagebox.showerror(
+                "Folder rename error",
+                f"Could not rename sample folder:\n{e}"
+            )
+            # Undo video rename if folder rename failed
+            if video_renamed and new_video_abspath.exists():
+                try:
+                    new_video_abspath.rename(old_video_abspath)
+                except Exception:
+                    pass
+            return
+
+        # ------------------------------------------------------------------
+        # 4. Update video_config.json / .csv
+        #    Remove the old entry and upsert the new one
+        # ------------------------------------------------------------------
+        self._remove_video_config_entry(old_video_filename)
+
+        if updated_json_paths:
+            # Re-read the first successfully written JSON for config data
+            final_json = new_sample_dir / updated_json_paths[0].name
+            try:
+                with final_json.open("r", encoding="utf-8") as f:
+                    final_data = json.load(f)
+                self._update_video_configs(new_video_name, exercise, final_data)
+            except Exception as e:
+                print(f"Warning: could not update video_config after rename: {e}")
+
+        # ------------------------------------------------------------------
+        # 5. Refresh the in-memory state to point at the renamed files
+        # ------------------------------------------------------------------
+        self.sample_json_paths = [
+            new_sample_dir / p.name for p in updated_json_paths
+        ]
+        self._unsaved_changes = False
+        self._mark_saved()
+
+        # Refresh the exercise/sample lists in the sidebar
+        self.populate_samples(exercise)
+        # Re-select the renamed sample in the list
+        for i in range(self.sample_list.size()):
+            if self.sample_list.get(i) == new_sample:
+                self.sample_list.selection_clear(0, tk.END)
+                self.sample_list.selection_set(i)
+                self.sample_list.see(i)
+                break
+
+        self.status_var.set(
+            f"Sample renamed: '{old_sample}' → '{new_sample}'"
+        )
+        messagebox.showinfo(
+            "Rename successful",
+            f"Sample renamed to: {new_sample}\n"
+            f"Video renamed to:  {new_video_name}\n"
+            f"video_config.json updated."
+        )
+
+    def _remove_video_config_entry(self, filename: str) -> None:
+        """Remove ALL entries for *filename* from video_config.json
+        and video_config.csv (handles pre-existing duplicates too)."""
+        if not self.json_root:
+            return
+        config_dir       = self.json_root.parent
+        json_config_path = config_dir / "video_config.json"
+        csv_config_path  = config_dir / "video_config.csv"
+
+        # JSON
+        if json_config_path.exists():
+            try:
+                with json_config_path.open("r", encoding="utf-8") as f:
+                    config_list = json.load(f)
+                if isinstance(config_list, list):
+                    before = len(config_list)
+                    config_list = [
+                        e for e in config_list
+                        if e.get("filename") != filename
+                    ]
+                    after = len(config_list)
+                    with json_config_path.open("w", encoding="utf-8") as f:
+                        json.dump(config_list, f, indent=2)
+                    print(
+                        f"video_config.json: removed {before - after} "
+                        f"entry/entries for '{filename}'"
+                    )
+            except Exception as e:
+                print(
+                    f"Warning: could not remove entry from "
+                    f"video_config.json: {e}"
+                )
+
+        # CSV
+        if csv_config_path.exists():
+            try:
+                with csv_config_path.open("r", encoding="utf-8") as f:
+                    rows = f.readlines()
+                new_rows: list[str] = []
+                removed = 0
+                for row in rows:
+                    stripped = row.strip()
+                    if not stripped:
+                        new_rows.append(row)
+                        continue
+                    parts = stripped.split(",")
+                    if parts[0].strip() == filename:
+                        removed += 1
+                        continue
+                    new_rows.append(row)
+                with csv_config_path.open("w", encoding="utf-8") as f:
+                    f.writelines(new_rows)
+                print(
+                    f"video_config.csv: removed {removed} "
+                    f"row(s) for '{filename}'"
+                )
+            except Exception as e:
+                print(
+                    f"Warning: could not remove entry from "
+                    f"video_config.csv: {e}"
+                )
     # ------------------------------------------------------------------
     # Save annotations
     # ------------------------------------------------------------------
@@ -2143,32 +2428,151 @@ class VideoPoseLabellerApp:
                 self._mark_saved()
             except Exception as e:
                 messagebox.showerror("Save error", f"Failed to save new file: {e}")
+                
+    def deduplicate_video_configs(self) -> None:
+        """Scan video_config.json and video_config.csv for duplicate
+        filename entries and remove them, keeping only the last
+        occurrence of each (which has the most recent data).
+        Shows a summary of what was cleaned up."""
+        if not self.json_root:
+            messagebox.showwarning(
+                "No folder",
+                "Please select a json_keypoints folder first."
+            )
+            return
+
+        config_dir       = self.json_root.parent
+        json_config_path = config_dir / "video_config.json"
+        csv_config_path  = config_dir / "video_config.csv"
+
+        json_dupes = 0
+        csv_dupes  = 0
+
+        # ------------------------------------------------------------------
+        # JSON deduplication
+        # ------------------------------------------------------------------
+        if json_config_path.exists():
+            try:
+                with json_config_path.open("r", encoding="utf-8") as f:
+                    config_list = json.load(f)
+
+                if isinstance(config_list, list):
+                    # Walk in reverse: first seen (from the end) wins
+                    seen_fns: set[str] = set()
+                    deduped: list[dict] = []
+                    for entry in reversed(config_list):
+                        fn = entry.get("filename", "")
+                        if fn in seen_fns:
+                            json_dupes += 1
+                            continue
+                        seen_fns.add(fn)
+                        deduped.append(entry)
+                    # Restore original forward order and sort
+                    deduped.reverse()
+                    deduped.sort(key=lambda x: x.get("filename", ""))
+
+                    if json_dupes > 0:
+                        with json_config_path.open("w", encoding="utf-8") as f:
+                            json.dump(deduped, f, indent=2)
+                        print(
+                            f"video_config.json: removed {json_dupes} duplicate(s)"
+                        )
+                    else:
+                        print("video_config.json: no duplicates found")
+
+            except Exception as e:
+                messagebox.showerror(
+                    "JSON error",
+                    f"Could not process video_config.json:\n{e}"
+                )
+                return
+
+        # ------------------------------------------------------------------
+        # CSV deduplication
+        # ------------------------------------------------------------------
+        if csv_config_path.exists():
+            try:
+                with csv_config_path.open("r", encoding="utf-8") as f:
+                    rows = f.readlines()
+
+                # Walk in reverse: first seen (from the end) wins
+                seen_fns_csv: set[str] = set()
+                deduped_rows: list[str] = []
+                for row in reversed(rows):
+                    stripped = row.strip()
+                    if not stripped:
+                        deduped_rows.append(row)
+                        continue
+                    parts = stripped.split(",")
+                    key = parts[0].strip()
+                    if key in seen_fns_csv:
+                        csv_dupes += 1
+                        continue
+                    seen_fns_csv.add(key)
+                    deduped_rows.append(row)
+
+                deduped_rows.reverse()
+
+                if csv_dupes > 0:
+                    with csv_config_path.open("w", encoding="utf-8") as f:
+                        f.writelines(deduped_rows)
+                    print(
+                        f"video_config.csv: removed {csv_dupes} duplicate(s)"
+                    )
+                else:
+                    print("video_config.csv: no duplicates found")
+
+            except Exception as e:
+                messagebox.showerror(
+                    "CSV error",
+                    f"Could not process video_config.csv:\n{e}"
+                )
+                return
+
+        # Summary
+        total = json_dupes + csv_dupes
+        if total > 0:
+            messagebox.showinfo(
+                "Deduplication complete",
+                f"Removed {json_dupes} duplicate(s) from video_config.json\n"
+                f"Removed {csv_dupes} duplicate(s) from video_config.csv"
+            )
+        else:
+            messagebox.showinfo(
+                "Deduplication complete",
+                "No duplicate entries found in either config file."
+            )
+        self.status_var.set(
+            f"Config deduplication done — "
+            f"{json_dupes} JSON + {csv_dupes} CSV duplicates removed"
+        )
 
     def _update_video_configs(
         self, filename: str, exercise: str, json_data: dict
     ) -> None:
-        """Upsert the entry for *filename* in video_config.json and
-        update the matching row in video_config.csv."""
+        """Upsert the entry for *filename* in both video_config.json
+        and video_config.csv, deduplicating both files on every write."""
         if not self.json_root:
             return
 
-        config_dir        = self.json_root.parent
-        json_config_path  = config_dir / "video_config.json"
-        csv_config_path   = config_dir / "video_config.csv"
+        config_dir       = self.json_root.parent
+        json_config_path = config_dir / "video_config.json"
+        csv_config_path  = config_dir / "video_config.csv"
 
         segments  = json_data.get("annotations", [])
         rep_count = sum(1 for s in segments if s.get("label") == "rep")
+        binary    = json_data.get("binary_label", "")
 
         new_entry = {
             "filename":     filename,
             "exercise":     exercise,
-            "binary_label": json_data.get("binary_label", ""),
+            "binary_label": binary,
             "rep_count":    rep_count,
             "segments":     segments,
         }
 
         # ------------------------------------------------------------------
-        # JSON config — find-and-replace by filename, or append if new
+        # JSON — read, deduplicate by filename, upsert, sort, write
         # ------------------------------------------------------------------
         config_list: list[dict] = []
         if json_config_path.exists():
@@ -2180,34 +2584,43 @@ class VideoPoseLabellerApp:
             except Exception as e:
                 print(f"Warning: could not read video_config.json: {e}")
 
-        # Look for an existing entry with the same filename
+        # Deduplicate: keep only the last occurrence of each filename,
+        # then we will upsert our new entry on top.
+        seen: dict[str, int] = {}
+        deduped: list[dict] = []
+        for entry in config_list:
+            fn = entry.get("filename", "")
+            if fn in seen:
+                # Remove the earlier duplicate
+                deduped[seen[fn]] = None    # type: ignore[call-overload]
+            seen[fn] = len(deduped)
+            deduped.append(entry)
+        config_list = [e for e in deduped if e is not None]
+
+        # Upsert our new entry
         updated = False
         for i, entry in enumerate(config_list):
             if entry.get("filename") == filename:
-                config_list[i] = new_entry   # replace in-place
+                config_list[i] = new_entry
                 updated = True
                 break
-
         if not updated:
-            config_list.append(new_entry)    # new file — add it
+            config_list.append(new_entry)
 
-        # Always keep the list sorted by filename for readability
         config_list.sort(key=lambda x: x.get("filename", ""))
 
         try:
             json_config_path.parent.mkdir(parents=True, exist_ok=True)
             with json_config_path.open("w", encoding="utf-8") as f:
                 json.dump(config_list, f, indent=2)
+            print(f"video_config.json updated for: {filename}")
         except Exception as e:
             print(f"Failed to write video_config.json: {e}")
 
         # ------------------------------------------------------------------
-        # CSV config — rewrite the matching row (or append if not found)
+        # CSV — read, deduplicate by first field, upsert, write
         # ------------------------------------------------------------------
-        csv_line = (
-            f"{filename},{exercise},{rep_count},"
-            f"{json_data.get('binary_label', '')}\n"
-        )
+        new_csv_row = f"{filename},{exercise},{rep_count},{binary}\n"
 
         existing_rows: list[str] = []
         if csv_config_path.exists():
@@ -2217,22 +2630,30 @@ class VideoPoseLabellerApp:
             except Exception as e:
                 print(f"Warning: could not read video_config.csv: {e}")
 
-        # Replace the row whose first field matches filename
-        new_rows: list[str] = []
-        row_updated = False
+        # Deduplicate: build an ordered dict keyed by filename field,
+        # last writer wins (keeps most recent data).
+        csv_dict: dict[str, str] = {}
+        blank_rows: list[str] = []
         for row in existing_rows:
-            if row.startswith(f"{filename},"):
-                new_rows.append(csv_line)
-                row_updated = True
-            else:
-                new_rows.append(row)
+            stripped = row.strip()
+            if not stripped:
+                blank_rows.append(row)
+                continue
+            parts = stripped.split(",")
+            key = parts[0].strip()
+            csv_dict[key] = row   # later row overwrites earlier duplicate
 
-        if not row_updated:
-            new_rows.append(csv_line)
+        # Upsert our new row
+        csv_dict[filename] = new_csv_row
+
+        # Rebuild: sort by filename key, preserve a single trailing newline
+        new_rows = [csv_dict[k] for k in sorted(csv_dict.keys())]
 
         try:
+            csv_config_path.parent.mkdir(parents=True, exist_ok=True)
             with csv_config_path.open("w", encoding="utf-8") as f:
                 f.writelines(new_rows)
+            print(f"video_config.csv updated for: {filename}")
         except Exception as e:
             print(f"Failed to write video_config.csv: {e}")
 
@@ -2341,6 +2762,137 @@ class WrapFrame(tk.Frame):
         # Tell the frame how tall it needs to be to show all rows
         total_height = y + row_height + self._pady
         self.configure(height=total_height)
+class SampleRenameDialog:
+    """Dialog for renaming an existing sample.
+    Collects a new person identifier and camera angle/ID.
+    The exercise name is fixed and shown read-only for context.
+    """
+
+    def __init__(self, parent, exercise: str, old_sample: str):
+        self.result = None
+
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("Rename Sample")
+        self.dialog.geometry("420x280")
+        self.dialog.resizable(False, False)
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+        self.dialog.update_idletasks()
+        x = (self.dialog.winfo_screenwidth()  // 2) - 210
+        y = (self.dialog.winfo_screenheight() // 2) - 140
+        self.dialog.geometry(f"+{x}+{y}")
+
+        main = ttk.Frame(self.dialog, padding=20)
+        main.grid(row=0, column=0, sticky="nsew")
+        main.columnconfigure(1, weight=1)
+        self.dialog.columnconfigure(0, weight=1)
+        self.dialog.rowconfigure(0, weight=1)
+
+        ttk.Label(
+            main,
+            text="Rename Sample",
+            font=("TkDefaultFont", 11, "bold"),
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
+
+        # Current name (read-only info)
+        ttk.Label(main, text="Current name:").grid(
+            row=1, column=0, sticky="w", pady=3
+        )
+        ttk.Label(
+            main, text=old_sample, foreground="#666"
+        ).grid(row=1, column=1, sticky="w", padx=(10, 0), pady=3)
+
+        # Exercise (read-only)
+        ttk.Label(main, text="Exercise:").grid(
+            row=2, column=0, sticky="w", pady=3
+        )
+        ttk.Label(
+            main, text=exercise, foreground="#666"
+        ).grid(row=2, column=1, sticky="w", padx=(10, 0), pady=3)
+
+        # New person identifier
+        ttk.Label(main, text="New person ID:").grid(
+            row=3, column=0, sticky="w", pady=3
+        )
+        self.person_var = tk.StringVar()
+        person_entry = ttk.Entry(main, textvariable=self.person_var, width=22)
+        person_entry.grid(row=3, column=1, sticky="ew", padx=(10, 0), pady=3)
+
+        # New camera angle/ID
+        ttk.Label(main, text="New angle/ID:").grid(
+            row=4, column=0, sticky="w", pady=3
+        )
+        self.angle_var = tk.StringVar()
+        angle_entry = ttk.Entry(main, textvariable=self.angle_var, width=22)
+        angle_entry.grid(row=4, column=1, sticky="ew", padx=(10, 0), pady=3)
+
+        # Live preview of the resulting name
+        self.preview_var = tk.StringVar(value="")
+        ttk.Label(
+            main,
+            textvariable=self.preview_var,
+            foreground="#0055cc",
+            font=("Courier", 9),
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        # Update preview on every keystroke
+        self.person_var.trace_add(
+            "write", lambda *_: self._update_preview(exercise)
+        )
+        self.angle_var.trace_add(
+            "write", lambda *_: self._update_preview(exercise)
+        )
+
+        # Buttons
+        btn_frame = ttk.Frame(main)
+        btn_frame.grid(
+            row=6, column=0, columnspan=2, sticky="ew", pady=(16, 0)
+        )
+        ttk.Button(
+            btn_frame, text="Rename",
+            command=lambda: self._ok(exercise),
+        ).grid(row=0, column=0, padx=(0, 6))
+        ttk.Button(
+            btn_frame, text="Cancel",
+            command=self.dialog.destroy,
+        ).grid(row=0, column=1)
+
+        person_entry.focus()
+        self.dialog.wait_window()
+
+    def _update_preview(self, exercise: str) -> None:
+        person = self.person_var.get().strip()
+        angle  = self.angle_var.get().strip()
+        if person or angle:
+            self.preview_var.set(
+                f"New name: {exercise}_{person}_{angle}"
+            )
+        else:
+            self.preview_var.set("")
+
+    def _ok(self, exercise: str) -> None:
+        person = self.person_var.get().strip()
+        angle  = self.angle_var.get().strip()
+        if not person:
+            messagebox.showerror(
+                "Missing input", "Please enter a person identifier."
+            )
+            return
+        if not angle:
+            messagebox.showerror(
+                "Missing input", "Please enter a camera angle/ID."
+            )
+            return
+        for value, name in [(person, "person"), (angle, "angle")]:
+            if not all(c.isalnum() or c in "_-" for c in value):
+                messagebox.showerror(
+                    "Invalid input",
+                    f"'{name}' must contain only letters, numbers, "
+                    "underscores, and hyphens."
+                )
+                return
+        self.result = (person, angle)
+        self.dialog.destroy()
 
 class SegmentEditDialog:
     """Dialog for editing segment start/end frames and labels."""
