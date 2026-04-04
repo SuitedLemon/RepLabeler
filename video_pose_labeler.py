@@ -109,6 +109,8 @@ class VideoPoseLabellerApp:
         self.current_layout: str = "default"
         self._segment_end: int = 0          # used by _segment_play_loop
         self._unsaved_changes: bool = False
+        self._undo_stack: list[list[Segment]] = []
+        self._redo_stack: list[list[Segment]] = []
         self._last_browse_dir: Optional[str] = None
 
         # Build the UI widgets
@@ -329,6 +331,11 @@ class VideoPoseLabellerApp:
         )
         ctrl_wrap.add(self.undo_button)
 
+        self.redo_button = ttk.Button(
+            ctrl_wrap, text="Redo", command=self.redo_last_mark
+        )
+        ctrl_wrap.add(self.redo_button)
+
         self.clear_button = ttk.Button(
             ctrl_wrap, text="Clear", command=self.clear_annotations
         )
@@ -466,7 +473,7 @@ class VideoPoseLabellerApp:
     def _build_menu(self) -> None:
         menubar = tk.Menu(self.root)
 
-        # File menu
+        # ---- File menu ----
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(
             label="Select json_keypoints folder…",
@@ -503,14 +510,32 @@ class VideoPoseLabellerApp:
             label="Exit",
             command=self.on_close,
         )
-        file_menu.add_separator()
-        file_menu.add_command(
-            label="Exit",
-            command=self.on_close,
-        )
         menubar.add_cascade(label="File", menu=file_menu)
 
-        # View menu
+        # ---- Edit menu ----
+        self._edit_menu = tk.Menu(menubar, tearoff=0)
+        self._edit_menu.add_command(
+            label="Undo",
+            command=self.undo_last_mark,
+            accelerator="Cmd+Z" if sys.platform == "darwin" else "Ctrl+Z",
+            state="disabled",
+        )
+        self._edit_menu.add_command(
+            label="Redo",
+            command=self.redo_last_mark,
+            accelerator=(
+                "Cmd+Shift+Z" if sys.platform == "darwin" else "Ctrl+Y"
+            ),
+            state="disabled",
+        )
+        self._edit_menu.add_separator()
+        self._edit_menu.add_command(
+            label="Clear all annotations",
+            command=self.clear_annotations,
+        )
+        menubar.add_cascade(label="Edit", menu=self._edit_menu)
+
+        # ---- View menu ----
         view_menu = tk.Menu(menubar, tearoff=0)
         view_menu.add_command(
             label="Default Layout  (landscape)",
@@ -523,6 +548,20 @@ class VideoPoseLabellerApp:
         menubar.add_cascade(label="View", menu=view_menu)
 
         self.root.config(menu=menubar)
+
+        # Keyboard shortcuts
+        modifier = "Command" if sys.platform == "darwin" else "Control"
+        self.root.bind_all(
+            f"<{modifier}-z>", lambda e: self.undo_last_mark()
+        )
+        self.root.bind_all(
+            f"<{modifier}-Z>", lambda e: self.redo_last_mark()
+        )
+        # Ctrl+Y as an alternative redo on Windows/Linux
+        if sys.platform != "darwin":
+            self.root.bind_all(
+                "<Control-y>", lambda e: self.redo_last_mark()
+            )
 
     # ------------------------------------------------------------------
     # Layout presets
@@ -937,6 +976,8 @@ class VideoPoseLabellerApp:
             return
 
         self.recorded_segments = []
+        self._undo_stack.clear()
+        self._redo_stack.clear()
         existing_segments = self._validate_existing_annotations(primary_data)
         if existing_segments:
             if messagebox.askyesno(
@@ -1098,6 +1139,7 @@ class VideoPoseLabellerApp:
             self.root, start_frame, end_frame, label, self.total_frames
         )
         if dialog.result:
+            self._push_undo()   # ← snapshot before change
             new_start, new_end, new_label = dialog.result
             self.recorded_segments[segment_index].start = new_start
             self.recorded_segments[segment_index].end   = new_end
@@ -1137,6 +1179,7 @@ class VideoPoseLabellerApp:
                 and seg.end == end_frame
                 and seg.label == label
             ):
+                self._push_undo()   # ← snapshot before change
                 self.recorded_segments.pop(i)
                 break
 
@@ -1174,6 +1217,7 @@ class VideoPoseLabellerApp:
             self.total_frames,
         )
         if dialog.result:
+            self._push_undo()   # ← snapshot before change
             new_start, new_end, new_label = dialog.result
             new_segment = Segment(new_start, new_end, new_label)
             self.recorded_segments.append(new_segment)
@@ -1659,6 +1703,7 @@ class VideoPoseLabellerApp:
                 "All states marked", "All states have already been marked."
             )
             return
+        self._push_undo()   # ← snapshot before change
         self.pause_video()
         start_frame = (
             0 if self.current_state_index == 0 else self.state_start_frame
@@ -1682,18 +1727,70 @@ class VideoPoseLabellerApp:
         self._mark_unsaved()
 
     def undo_last_mark(self) -> None:
-        if self.current_state_index == 0:
+        """Restore the previous annotation state from the undo stack."""
+        if not self._undo_stack:
             return
+        import copy
+        # Push current state onto redo before restoring
+        self._redo_stack.append(copy.deepcopy(self.recorded_segments))
+        self.recorded_segments = self._undo_stack.pop()
+
         self.pause_video()
-        removed = self.recorded_segments.pop()
-        self.current_state_index -= 1
-        self.state_start_frame = removed.start
+        self.current_state_index = len(self.recorded_segments)
+        self.state_start_frame = (
+            0 if not self.recorded_segments
+            else self.recorded_segments[-1].end + 1
+        )
+        self.state_start_frame = min(
+            self.state_start_frame, max(self.total_frames - 1, 0)
+        )
+        if self.new_video_mode:
+            has_finish = any(
+                seg.label == "finish" for seg in self.recorded_segments
+            )
+            if not has_finish:
+                self.binary_label = ""
         self.seek_to_frame(self.state_start_frame)
         self._refresh_state_ui()
         self._update_annotation_view()
         self._refresh_binary_label_display()
+        self._update_undo_redo_buttons()
         self._update_buttons()
         self._mark_unsaved()
+        self.status_var.set("Undo")
+
+    def redo_last_mark(self) -> None:
+        """Re-apply the next annotation state from the redo stack."""
+        if not self._redo_stack:
+            return
+        import copy
+        # Push current state onto undo before re-applying
+        self._undo_stack.append(copy.deepcopy(self.recorded_segments))
+        self.recorded_segments = self._redo_stack.pop()
+
+        self.pause_video()
+        self.current_state_index = len(self.recorded_segments)
+        self.state_start_frame = (
+            0 if not self.recorded_segments
+            else self.recorded_segments[-1].end + 1
+        )
+        self.state_start_frame = min(
+            self.state_start_frame, max(self.total_frames - 1, 0)
+        )
+        if self.new_video_mode:
+            has_finish = any(
+                seg.label == "finish" for seg in self.recorded_segments
+            )
+            if not has_finish:
+                self.binary_label = ""
+        self.seek_to_frame(self.state_start_frame)
+        self._refresh_state_ui()
+        self._update_annotation_view()
+        self._refresh_binary_label_display()
+        self._update_undo_redo_buttons()
+        self._update_buttons()
+        self._mark_unsaved()
+        self.status_var.set("Redo")
 
     def clear_annotations(self) -> None:
         if not self.state_sequence and not self.new_video_mode:
@@ -1702,6 +1799,9 @@ class VideoPoseLabellerApp:
             "Clear annotations", "Discard all marks for this sample?"
         ):
             return
+        self._push_undo()   # ← snapshot before change
+        self.pause_video()
+        # ... rest unchanged ...
         self.pause_video()
         self.recorded_segments.clear()
         self.current_state_index = 0
@@ -1815,6 +1915,9 @@ class VideoPoseLabellerApp:
             state="normal" if can_save else "disabled"
         )
 
+        # Sync undo/redo button states
+        self._update_undo_redo_buttons()
+        
         # Defer the reflow until Tkinter has finished resolving all widget
         # geometries — this prevents winfo_width() returning a stale value
         # (often 1) which caused _reflow to exit early and leave buttons hidden.
@@ -1873,6 +1976,8 @@ class VideoPoseLabellerApp:
         self.binary_label = ""  # stays empty until "finish" is marked
         self.state_sequence = []
         self.recorded_segments = []
+        self._undo_stack.clear()
+        self._redo_stack.clear()
         self.sample_json_paths = []
         self.current_state_index = 0
         self.state_start_frame = 0
@@ -1909,6 +2014,7 @@ class VideoPoseLabellerApp:
                 "Invalid segment", "End frame must be after start frame."
             )
             return
+        self._push_undo()   # ← snapshot before change
         new_segment = Segment(start_frame, end_frame, label)
         self.recorded_segments.append(new_segment)
         self._update_annotation_view()
@@ -2755,6 +2861,33 @@ class VideoPoseLabellerApp:
         if title.startswith("* "):
             self.root.title(title[2:])
 
+    def _push_undo(self) -> None:
+        """Snapshot the current segments onto the undo stack and clear redo."""
+        import copy
+        self._undo_stack.append(copy.deepcopy(self.recorded_segments))
+        self._redo_stack.clear()
+        self._update_undo_redo_buttons()
+
+    def _update_undo_redo_buttons(self) -> None:
+        """Sync the enabled/disabled state of undo and redo buttons
+        and their menu entries."""
+        can_undo = bool(self._undo_stack)
+        can_redo = bool(self._redo_stack)
+        self.undo_button.config(
+            state="normal" if can_undo else "disabled"
+        )
+        self.redo_button.config(
+            state="normal" if can_redo else "disabled"
+        )
+        # Menu entries
+        if hasattr(self, "_edit_menu"):
+            self._edit_menu.entryconfig(
+                "Undo", state="normal" if can_undo else "disabled"
+            )
+            self._edit_menu.entryconfig(
+                "Redo", state="normal" if can_redo else "disabled"
+            )
+
 # ======================================================================
 # Dialog classes
 # ======================================================================
@@ -2807,6 +2940,7 @@ class WrapFrame(tk.Frame):
         # Tell the frame how tall it needs to be to show all rows
         total_height = y + row_height + self._pady
         self.configure(height=total_height)
+        
 class SampleRenameDialog:
     """Dialog for renaming an existing sample.
     Collects a new person identifier and camera angle/ID.
