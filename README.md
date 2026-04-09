@@ -91,7 +91,7 @@ project_root/
 4. Double-click or click "Load selected sample"
 
 ### 3. Binary Labels
-- Insert rep/no-rep segments to begin generating binary labels for the chosen exercise
+- Insert/mark rep/no-rep segments to begin generating binary labels for the chosen exercise
 
 ### 4. Annotating Videos
 
@@ -159,6 +159,7 @@ To create an aggregated registry of all labeled videos:
 - **New videos**: Provide naming info and files are auto-organized
 - Click "Save annotations" to write labels back to JSON files
 - Annotations are saved across all JSON files for the sample
+- Exiting application while changes have been made prompts user to save
 
 ## JSON Format
 

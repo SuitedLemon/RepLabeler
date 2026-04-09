@@ -224,24 +224,6 @@ class VideoPoseLabellerApp:
         self.sample_list.grid(row=6, column=0, sticky="nsew")
         self.sample_list.bind("<Double-Button-1>", self.on_sample_double_click)
 
-        ttk.Button(
-            self.sidebar,
-            text="Load selected sample",
-            command=self.load_selected_sample,
-        ).grid(row=7, column=0, pady=(10, 0), sticky="ew")
-
-        # NEW — rename the currently loaded sample
-        ttk.Button(
-            self.sidebar,
-            text="Rename sample…",
-            command=self.rename_sample,
-        ).grid(row=8, column=0, pady=(4, 0), sticky="ew")
-
-        ttk.Button(
-            self.sidebar,
-            text="Build video_config.json",
-            command=self.build_video_config,
-        ).grid(row=8, column=0, pady=(6, 0), sticky="ew")
 
         # Both listboxes share the available vertical space equally
         self.sidebar.rowconfigure(4, weight=1)
