@@ -1,9 +1,13 @@
 # Video Pose Repetition Labeller Dependencies
 
 # Core GUI and image processing
-opencv-python>=4.8.0
+opencv-python>=4.5.0
 Pillow>=9.0.0
+numpy>=1.21.0
 
 # Note: tkinter is included with most Python installations
 # If tkinter is not available, install python3-tk (Ubuntu/Debian) 
 # or use a Python distribution that includes tkinter
+# numpy is listed as optional in the source code (np = None fallback) but opencv-python itself
+# depends on it internally so it will always be installed as a transitive dependency regardless
+# — listing it explicitly just makes that contract clear
