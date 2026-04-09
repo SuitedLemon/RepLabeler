@@ -905,7 +905,18 @@ class VideoPoseLabellerApp:
         self.pause_video()
         self.close_video()
 
-        self.new_video_mode = False
+        # Explicitly reset ALL mode flags before anything else so
+        # _update_buttons always sees a clean normal-sample state.
+        self.new_video_mode      = False
+        self.new_video_path      = None
+        self.binary_label        = ""
+        self.state_sequence      = []
+        self.recorded_segments   = []
+        self.sample_json_paths   = []
+        self.current_state_index = 0
+        self.state_start_frame   = 0
+        self._undo_stack.clear()
+        self._redo_stack.clear()
 
         sample_dir = self.json_root / exercise / sample
         json_files = sorted(sample_dir.glob("*.json"))
@@ -917,14 +928,14 @@ class VideoPoseLabellerApp:
 
         # Find the first JSON file whose top-level structure is a dict
         primary_json_path = None
-        primary_data = None
+        primary_data      = None
         for candidate in json_files:
             try:
                 with candidate.open("r", encoding="utf-8") as handle:
                     loaded = json.load(handle)
                 if isinstance(loaded, dict):
                     primary_json_path = candidate
-                    primary_data = loaded
+                    primary_data      = loaded
                     break
             except json.JSONDecodeError:
                 continue
@@ -933,7 +944,8 @@ class VideoPoseLabellerApp:
             messagebox.showerror(
                 "Invalid JSON",
                 "No valid JSON object (dict) found in the selected sample folder.\n"
-                "All JSON files either failed to parse or contain a list at the top level."
+                "All JSON files either failed to parse or contain a list at "
+                "the top level."
             )
             return
 
@@ -946,11 +958,12 @@ class VideoPoseLabellerApp:
 
         if not all(ch in "01" for ch in binary_label):
             messagebox.showerror(
-                "Invalid binary label", "Binary label must contain only 0 and 1"
+                "Invalid binary label",
+                "Binary label must contain only 0 and 1"
             )
             return
 
-        self.binary_label = binary_label
+        self.binary_label   = binary_label
         self.state_sequence = self._build_state_sequence(binary_label)
 
         # Only keep JSON files whose top-level structure is a dict
@@ -975,9 +988,6 @@ class VideoPoseLabellerApp:
         if not self._open_video(video_path):
             return
 
-        self.recorded_segments = []
-        self._undo_stack.clear()
-        self._redo_stack.clear()
         existing_segments = self._validate_existing_annotations(primary_data)
         if existing_segments:
             if messagebox.askyesno(
@@ -985,8 +995,6 @@ class VideoPoseLabellerApp:
                 "Existing annotations were found. Do you want to load them?"
             ):
                 self._apply_existing_segments(existing_segments)
-            else:
-                self.recorded_segments = []
 
         self.current_state_index = len(self.recorded_segments)
         self.state_start_frame = (
@@ -1001,9 +1009,9 @@ class VideoPoseLabellerApp:
         self._refresh_state_ui()
         self._update_annotation_view()
         self._refresh_binary_label_display()
-        self._update_buttons()
         self._unsaved_changes = False
         self._mark_saved()
+        self._update_buttons()
 
         if self.current_layout == "vertical":
             self.root.after_idle(self._reapply_vertical_geometry)
@@ -1860,33 +1868,33 @@ class VideoPoseLabellerApp:
 
         self.play_button.config(state="normal" if has_video else "disabled")
 
+        # Determine which button set to show.
+        # Manual mode: new_video_mode is True AND no binary_label committed yet.
+        # Normal mode: everything else (including loaded samples).
+        use_manual_mode = self.new_video_mode and not self.binary_label
+
         manual_btns = [
             self.mark_prep_button, self.mark_rep_button,
             self.mark_norep_button, self.mark_finish_button,
         ]
 
-        if self.new_video_mode and not self.binary_label:
-            # --- Manual segment mode ---
-            # Remove mark_button from wrap children and hide it
+        if use_manual_mode:
+            # Hide state-sequence mark button
             if self.mark_button in self._ctrl_wrap._children:
                 self._ctrl_wrap._children.remove(self.mark_button)
             self.mark_button.place_forget()
-
-            # Insert manual buttons before undo if not already present
+            # Ensure manual buttons are in the wrap list before undo
             for btn in manual_btns:
                 if btn not in self._ctrl_wrap._children:
                     idx = self._ctrl_wrap._children.index(self.undo_button)
                     self._ctrl_wrap._children.insert(idx, btn)
-
         else:
-            # --- State sequence mode ---
-            # Remove and hide all manual buttons
+            # Hide all manual buttons
             for btn in manual_btns:
                 if btn in self._ctrl_wrap._children:
                     self._ctrl_wrap._children.remove(btn)
                 btn.place_forget()
-
-            # Re-insert mark_button before undo if missing
+            # Ensure mark_button is in the wrap list before undo
             if self.mark_button not in self._ctrl_wrap._children:
                 idx = self._ctrl_wrap._children.index(self.undo_button)
                 self._ctrl_wrap._children.insert(idx, self.mark_button)
@@ -1916,30 +1924,19 @@ class VideoPoseLabellerApp:
         self.save_button.config(
             state="normal" if can_save else "disabled"
         )
-
-        # Sync undo/redo button states
         self._update_undo_redo_buttons()
 
-        # Defer the reflow until Tkinter has finished resolving all widget
-        # geometries — this prevents winfo_width() returning a stale value
-        # (often 1) which caused _reflow to exit early and leave buttons hidden.
         def _deferred_reflow(attempt: int = 0) -> None:
-            """Try to reflow the wrap frame, retrying up to 20 times at
-            20 ms intervals until a real width is available."""
             self._ctrl_wrap.update_idletasks()
             w = self._ctrl_wrap.winfo_width()
-
-            # Fall back to parent widths if wrap frame isn't sized yet
             if w <= 1:
                 w = self.controls_panel.winfo_width()
             if w <= 1:
                 w = self.root.winfo_width()
-
             if w <= 1:
                 if attempt < 20:
                     self.root.after(20, lambda: _deferred_reflow(attempt + 1))
                 return
-
             self._ctrl_wrap._reflow(w)
 
         self.root.after_idle(lambda: _deferred_reflow(0))
