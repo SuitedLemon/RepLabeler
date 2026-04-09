@@ -40,7 +40,7 @@ For binary label "1010", the sequence would be: `prep → rep → no-rep → rep
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.10+
 - OpenCV (for video processing)
 - Pillow (for image handling)
 - tkinter (usually included with Python)
@@ -49,7 +49,7 @@ For binary label "1010", the sequence would be: `prep → rep → no-rep → rep
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/lc-leonardo/RepLabeler.git
+   git clone https://github.com/SuitedLemon/RepLabeler.git
    cd RepLabeler
    ```
 
@@ -90,10 +90,8 @@ project_root/
 3. Select a specific sample
 4. Double-click or click "Load selected sample"
 
-### 3. Providing Binary Labels
-- If the JSON doesn't contain a `binary_label` field, you'll be prompted to enter one
-- Enter a string of 0s and 1s representing rep/no-rep phases (e.g., "1010")
-- This generates the state sequence for annotation
+### 3. Binary Labels
+- Insert rep/no-rep segments to begin generating binary labels for the chosen exercise
 
 ### 4. Annotating Videos
 
