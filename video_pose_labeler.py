@@ -99,6 +99,17 @@ class VideoPoseLabellerApp:
         self.recorded_segments: List[Segment] = []
         self.current_state_index: int = 0
         self.state_start_frame: int = 0
+        
+        # Annotation mode — one of:
+        #   "classic"   Classic State Sequence
+        #   "boundary"  Rep Boundary Mode
+        #   "manual"    Manual Windowing Mode
+        #   "flexible"  Flexible Binary Labels
+        self.annotation_mode: str = "classic"
+
+        # Rep boundary sub-state
+        self.awaiting_rep_end: bool = False
+        self.current_rep_start: Optional[int] = None
 
         # UI state variables
         self.root_dir_var = tk.StringVar(value="Choose a json_keypoints root folder")
@@ -159,6 +170,41 @@ class VideoPoseLabellerApp:
         ttk.Label(
             self.sidebar, text="Exercises", padding=(0, 10, 0, 0)
         ).grid(row=3, column=0, sticky="w")
+        self.exercise_list = tk.Listbox(
+            self.sidebar, exportselection=False
+        )
+        self.exercise_list.grid(row=4, column=0, sticky="nsew")
+        self.exercise_list.bind("<<ListboxSelect>>", self.on_exercise_select)
+
+        ttk.Label(
+            self.sidebar, text="Samples", padding=(0, 10, 0, 0)
+        ).grid(row=5, column=0, sticky="w")
+        self.sample_list = tk.Listbox(
+            self.sidebar, exportselection=False
+        )
+        self.sample_list.grid(row=6, column=0, sticky="nsew")
+        self.sample_list.bind("<Double-Button-1>", self.on_sample_double_click)
+
+        ttk.Button(
+            self.sidebar,
+            text="Load selected sample",
+            command=self.load_selected_sample,
+        ).grid(row=7, column=0, pady=(10, 0), sticky="ew")
+
+        ttk.Button(
+            self.sidebar,
+            text="Rename sample…",
+            command=self.rename_sample,
+        ).grid(row=8, column=0, pady=(4, 0), sticky="ew")
+
+        ttk.Button(
+            self.sidebar,
+            text="Build video_config.json",
+            command=self.build_video_config,
+        ).grid(row=9, column=0, pady=(6, 0), sticky="ew")
+
+        self.sidebar.rowconfigure(4, weight=1)
+        self.sidebar.rowconfigure(6, weight=1)
 
         # No fixed height — the listbox grows/shrinks with the window
         self.exercise_list = tk.Listbox(
@@ -317,9 +363,16 @@ class VideoPoseLabellerApp:
             ctrl_wrap, text="Mark as finish",
             command=lambda: self.mark_manual_segment("finish"),
         )
-
+        
+        # Rep boundary button — shown only in boundary mode
+        self.mark_rep_boundary_button = ttk.Button(
+            ctrl_wrap, text="Mark rep start",
+            command=self.mark_rep_boundary,
+        )
+        # Do NOT add to ctrl_wrap yet — _update_buttons manages visibility
         # Register the manual buttons so they wrap too, but keep them
         # hidden until new_video_mode activates them.
+
         for btn in (
             self.mark_prep_button, self.mark_rep_button,
             self.mark_norep_button, self.mark_finish_button,
@@ -535,6 +588,41 @@ class VideoPoseLabellerApp:
         )
         menubar.add_cascade(label="Edit", menu=self._edit_menu)
 
+        # ---- Mode menu ----
+        self._mode_menu = tk.Menu(menubar, tearoff=0)
+        self.annotation_mode_var = tk.StringVar(value="classic")
+
+        self._mode_menu.add_radiobutton(
+            label="Classic State Sequence",
+            variable=self.annotation_mode_var,
+            value="classic",
+            command=self._on_annotation_mode_changed,
+        )
+        self._mode_menu.add_radiobutton(
+            label="Rep Boundary Mode",
+            variable=self.annotation_mode_var,
+            value="boundary",
+            command=self._on_annotation_mode_changed,
+        )
+        self._mode_menu.add_radiobutton(
+            label="Manual Windowing Mode",
+            variable=self.annotation_mode_var,
+            value="manual",
+            command=self._on_annotation_mode_changed,
+        )
+        self._mode_menu.add_radiobutton(
+            label="Flexible Binary Labels",
+            variable=self.annotation_mode_var,
+            value="flexible",
+            command=self._on_annotation_mode_changed,
+        )
+        self._mode_menu.add_separator()
+        self._mode_menu.add_command(
+            label="About modes…",
+            command=self._show_mode_help,
+        )
+        menubar.add_cascade(label="Mode", menu=self._mode_menu)
+
         # ---- View menu ----
         view_menu = tk.Menu(menubar, tearoff=0)
         view_menu.add_command(
@@ -557,11 +645,175 @@ class VideoPoseLabellerApp:
         self.root.bind_all(
             f"<{modifier}-Z>", lambda e: self.redo_last_mark()
         )
-        # Ctrl+Y as an alternative redo on Windows/Linux
         if sys.platform != "darwin":
             self.root.bind_all(
                 "<Control-y>", lambda e: self.redo_last_mark()
             )
+    
+    def _on_annotation_mode_changed(self) -> None:
+        """Called when the user switches annotation mode via the Mode menu."""
+        new_mode = self.annotation_mode_var.get()
+
+        # If switching away from boundary mode mid-rep, warn the user
+        if (
+            self.annotation_mode == "boundary"
+            and self.awaiting_rep_end
+            and new_mode != "boundary"
+        ):
+            if not messagebox.askyesno(
+                "Incomplete rep",
+                "You have an unfinished rep boundary (start marked, "
+                "no end yet).\nDiscard it and switch mode?"
+            ):
+                # Revert the menu selection
+                self.annotation_mode_var.set(self.annotation_mode)
+                return
+            self.awaiting_rep_end  = False
+            self.current_rep_start = None
+
+        self.annotation_mode = new_mode
+
+        mode_descriptions = {
+            "classic":  "Classic State Sequence — mark prep → rep → no-rep → finish in order",
+            "boundary": "Rep Boundary Mode — mark individual rep start/end points",
+            "manual":   "Manual Windowing Mode — create custom segments freely",
+            "flexible": "Flexible Binary Labels — edit binary labels and segments on the fly",
+        }
+        self.status_var.set(f"Mode: {mode_descriptions[new_mode]}")
+        self._refresh_state_ui()
+        self._update_buttons()
+    
+    def mark_rep_boundary(self) -> None:
+        """Mark rep start or end in Rep Boundary Mode."""
+        if not self.capture:
+            messagebox.showwarning("No video", "Please load a video first.")
+            return
+        self.pause_video()
+        if not self.awaiting_rep_end:
+            # Mark start
+            self.current_rep_start = self.current_frame
+            self.awaiting_rep_end  = True
+            self.mark_rep_boundary_button.config(text="Mark rep end")
+            self.status_var.set(
+                f"Rep start marked at frame {self.current_frame} — "
+                f"now mark the rep end"
+            )
+            self._update_buttons()
+        else:
+            # Mark end
+            if self.current_frame <= self.current_rep_start:
+                messagebox.showwarning(
+                    "Invalid range",
+                    f"Rep end ({self.current_frame}) must be after "
+                    f"rep start ({self.current_rep_start})"
+                )
+                return
+            label = self._determine_rep_label()
+            if label is None:
+                return
+            self._push_undo()
+            new_segment = Segment(
+                self.current_rep_start, self.current_frame, label
+            )
+            self.recorded_segments.append(new_segment)
+            self.recorded_segments.sort(key=lambda s: s.start)
+            seg_count = len([
+                s for s in self.recorded_segments
+                if s.label in ("rep", "no-rep")
+            ])
+            self.status_var.set(
+                f"Segment {seg_count} ({label}) recorded: "
+                f"{self.current_rep_start}–{self.current_frame}"
+            )
+            self.awaiting_rep_end  = False
+            self.current_rep_start = None
+            self._update_annotation_view()
+            self._refresh_binary_label_display()
+            self._update_buttons()
+            self._mark_unsaved()
+
+    def _determine_rep_label(self) -> Optional[str]:
+        """Determine if the current boundary segment is rep or no-rep."""
+        if self.binary_label:
+            existing_count = len([
+                s for s in self.recorded_segments
+                if s.label in ("rep", "no-rep")
+            ])
+            if existing_count < len(self.binary_label):
+                bit = self.binary_label[existing_count]
+                return "rep" if bit == "1" else "no-rep"
+            else:
+                messagebox.showwarning(
+                    "All segments marked",
+                    f"All {len(self.binary_label)} segments have already "
+                    "been marked.\nUpdate the binary label to add more."
+                )
+                return None
+        else:
+            result = messagebox.askyesno(
+                "Classify segment",
+                f"Is frames {self.current_rep_start}–{self.current_frame} "
+                "a successful rep?\n\nYes = rep    No = no-rep"
+            )
+            return "rep" if result else "no-rep"
+
+    def _show_mode_help(self) -> None:
+        """Show a brief description of each annotation mode."""
+        help_text = (
+            "CLASSIC STATE SEQUENCE\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Mark continuous state transitions in order:\n"
+            "prep → rep/no-rep → ... → finish\n"
+            "Best for samples with known binary labels.\n"
+            "\n"
+            "REP BOUNDARY MODE\n"
+            "━━━━━━━━━━━━━━━━━\n"
+            "Mark the start and end of each rep individually.\n"
+            "The app classifies each as rep or no-rep automatically\n"
+            "using the binary label, or asks you if no label exists.\n"
+            "\n"
+            "MANUAL WINDOWING MODE\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "Create any segment (prep/rep/no-rep/finish) freely.\n"
+            "Ideal for new videos without existing pose data.\n"
+            "Binary label is derived automatically when finish is marked.\n"
+            "\n"
+            "FLEXIBLE BINARY LABELS\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Edit the binary label at any time and re-annotate on the fly.\n"
+            "Segments and binary label stay in sync automatically.\n"
+            "Best for correcting or refining existing annotations."
+        )
+        dialog = tk.Toplevel(self.root)
+        dialog.title("About Annotation Modes")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth()  // 2) - 220
+        y = (dialog.winfo_screenheight() // 2) - 220
+        dialog.geometry(f"440x480+{x}+{y}")
+
+        main = ttk.Frame(dialog, padding=20)
+        main.pack(fill=tk.BOTH, expand=True)
+
+        text = tk.Text(
+            main,
+            wrap=tk.WORD,
+            font=("TkDefaultFont", 10),
+            relief=tk.FLAT,
+            bg=dialog.cget("bg"),
+            state=tk.NORMAL,
+            width=50,
+            height=22,
+        )
+        text.insert(tk.END, help_text)
+        text.config(state=tk.DISABLED)
+        text.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Button(
+            main, text="Close", command=dialog.destroy
+        ).pack(pady=(12, 0))
 
     # ------------------------------------------------------------------
     # Layout presets
@@ -757,17 +1009,7 @@ class VideoPoseLabellerApp:
     # Binary label display helper
     # ------------------------------------------------------------------
     def _refresh_binary_label_display(self) -> None:
-        """Recompute and display the binary label from current segments.
-
-        In new_video_mode:
-        - self.binary_label is only committed when 'finish' is present
-          in the recorded segments (annotation is considered complete).
-        - If no finish segment exists, self.binary_label is cleared back
-          to "" so the manual button set stays visible.
-
-        In normal sample mode:
-        - self.binary_label is always kept in sync with the segments.
-        """
+        """Recompute and display the binary label from current segments."""
         middle = [
             seg for seg in self.recorded_segments
             if seg.label in ("rep", "no-rep")
@@ -775,15 +1017,18 @@ class VideoPoseLabellerApp:
         middle.sort(key=lambda s: s.start)
 
         if middle:
-            derived      = "".join("1" if s.label == "rep" else "0" for s in middle)
+            derived      = "".join(
+                "1" if s.label == "rep" else "0" for s in middle
+            )
             rep_count    = sum(1 for s in middle if s.label == "rep")
             no_rep_count = sum(1 for s in middle if s.label == "no-rep")
             self.rep_count_var.set(
                 f"({rep_count} rep{'s' if rep_count != 1 else ''}, "
                 f"{no_rep_count} no-rep{'s' if no_rep_count != 1 else ''})"
             )
-        elif self.binary_label and not self.new_video_mode:
-            # Normal mode only — show the pre-loaded binary label as fallback
+        elif self.binary_label and self.annotation_mode not in (
+            "manual", "flexible"
+        ):
             derived      = self.binary_label
             rep_count    = self.binary_label.count("1")
             no_rep_count = self.binary_label.count("0")
@@ -795,20 +1040,22 @@ class VideoPoseLabellerApp:
             derived = "—"
             self.rep_count_var.set("")
 
-        if self.new_video_mode:
-            # Only commit binary_label when a finish segment is present —
-            # this is the signal that annotation is complete.
+        # Commit binary_label based on mode
+        if self.annotation_mode in ("manual",):
+            # Only commit when finish is present
             has_finish = any(
                 seg.label == "finish" for seg in self.recorded_segments
             )
             if has_finish and derived != "—":
                 self.binary_label = derived
             else:
-                # No finish segment means annotation is still in progress —
-                # clear binary_label so the manual button set stays visible.
                 self.binary_label = ""
+        elif self.annotation_mode == "flexible":
+            # Always keep in sync in flexible mode
+            if derived != "—":
+                self.binary_label = derived
         else:
-            # Normal sample mode — always keep binary_label in sync.
+            # Classic and boundary — sync when segments exist
             if derived != "—":
                 self.binary_label = derived
 
@@ -917,6 +1164,8 @@ class VideoPoseLabellerApp:
         self.state_start_frame   = 0
         self._undo_stack.clear()
         self._redo_stack.clear()
+        self.awaiting_rep_end  = False
+        self.current_rep_start = None
 
         sample_dir = self.json_root / exercise / sample
         json_files = sorted(sample_dir.glob("*.json"))
@@ -1830,26 +2079,72 @@ class VideoPoseLabellerApp:
     # UI updates
     # ------------------------------------------------------------------
     def _refresh_state_ui(self) -> None:
-        if not self.state_sequence:
-            self.current_state_var.set("No sample loaded")
-            self.sequence_var.set("")
-            return
-        if self.current_state_index < len(self.state_sequence):
-            current_label = self.state_sequence[self.current_state_index]
-            self.current_state_var.set(
-                f"Current state: {current_label} — mark its end"
-            )
-        else:
-            self.current_state_var.set("All states marked. Ready to save.")
-        decorated = []
-        for idx, label in enumerate(self.state_sequence):
-            if idx < self.current_state_index:
-                decorated.append(f"✓ {label}")
-            elif idx == self.current_state_index:
-                decorated.append(f"→ {label}")
+        mode_labels = {
+            "classic":  "Classic State Sequence",
+            "boundary": "Rep Boundary Mode",
+            "manual":   "Manual Windowing Mode",
+            "flexible": "Flexible Binary Labels",
+        }
+        mode_name = mode_labels.get(self.annotation_mode, "")
+
+        if self.annotation_mode == "classic":
+            if not self.state_sequence:
+                self.current_state_var.set(
+                    f"[{mode_name}]  No sample loaded"
+                )
+                self.sequence_var.set("")
+                return
+            if self.current_state_index < len(self.state_sequence):
+                label = self.state_sequence[self.current_state_index]
+                self.current_state_var.set(
+                    f"[{mode_name}]  Current state: {label} — mark its end"
+                )
             else:
-                decorated.append(label)
-        self.sequence_var.set(" | ".join(decorated))
+                self.current_state_var.set(
+                    f"[{mode_name}]  All states marked. Ready to save."
+                )
+            decorated = []
+            for idx, label in enumerate(self.state_sequence):
+                if idx < self.current_state_index:
+                    decorated.append(f"✓ {label}")
+                elif idx == self.current_state_index:
+                    decorated.append(f"→ {label}")
+                else:
+                    decorated.append(label)
+            self.sequence_var.set(" | ".join(decorated))
+
+        elif self.annotation_mode == "boundary":
+            if self.awaiting_rep_end:
+                self.current_state_var.set(
+                    f"[{mode_name}]  "
+                    f"Awaiting rep end (start: frame {self.current_rep_start})"
+                )
+            else:
+                count = len([
+                    s for s in self.recorded_segments
+                    if s.label in ("rep", "no-rep")
+                ])
+                self.current_state_var.set(
+                    f"[{mode_name}]  {count} segment(s) marked — "
+                    "click 'Mark rep start' to add another"
+                )
+            self.sequence_var.set("")
+
+        elif self.annotation_mode == "manual":
+            seg_count = len(self.recorded_segments)
+            self.current_state_var.set(
+                f"[{mode_name}]  {seg_count} segment(s) — "
+                "use the marking buttons to add segments"
+            )
+            self.sequence_var.set("")
+
+        elif self.annotation_mode == "flexible":
+            seg_count = len(self.recorded_segments)
+            self.current_state_var.set(
+                f"[{mode_name}]  {seg_count} segment(s) — "
+                "edit segments and binary label freely"
+            )
+            self.sequence_var.set("")
 
     def _update_annotation_view(self) -> None:
         for child in self.annotation_tree.get_children():
@@ -1862,59 +2157,70 @@ class VideoPoseLabellerApp:
 
     def _update_buttons(self) -> None:
         has_video    = self.capture is not None
-        can_mark     = has_video and self.current_state_index < len(self.state_sequence)
         has_segments = bool(self.recorded_segments)
         can_save     = has_video and has_segments
 
+        # Which buttons are valid depends on mode
+        can_mark_classic = (
+            has_video
+            and self.annotation_mode == "classic"
+            and self.current_state_index < len(self.state_sequence)
+        )
+        can_mark_boundary = (
+            has_video and self.annotation_mode == "boundary"
+        )
+        can_mark_manual = (
+            has_video and self.annotation_mode in ("manual", "flexible")
+        )
+
         self.play_button.config(state="normal" if has_video else "disabled")
 
-        # Determine which button set to show.
-        # Manual mode: new_video_mode is True AND no binary_label committed yet.
-        # Normal mode: everything else (including loaded samples).
-        use_manual_mode = self.new_video_mode and not self.binary_label
-
+        # Button sets for each mode
         manual_btns = [
             self.mark_prep_button, self.mark_rep_button,
             self.mark_norep_button, self.mark_finish_button,
         ]
 
-        if use_manual_mode:
-            # Hide state-sequence mark button
-            if self.mark_button in self._ctrl_wrap._children:
-                self._ctrl_wrap._children.remove(self.mark_button)
-            self.mark_button.place_forget()
-            # Ensure manual buttons are in the wrap list before undo
+        # Hide everything first then show what is needed
+        all_special = manual_btns + [
+            self.mark_button, self.mark_rep_boundary_button
+        ]
+        for btn in all_special:
+            if btn in self._ctrl_wrap._children:
+                self._ctrl_wrap._children.remove(btn)
+            btn.place_forget()
+
+        if self.annotation_mode == "classic":
+            if self.mark_button not in self._ctrl_wrap._children:
+                idx = self._ctrl_wrap._children.index(self.undo_button)
+                self._ctrl_wrap._children.insert(idx, self.mark_button)
+            self.mark_button.config(
+                state="normal" if can_mark_classic else "disabled"
+            )
+
+        elif self.annotation_mode == "boundary":
+            if self.mark_rep_boundary_button not in self._ctrl_wrap._children:
+                idx = self._ctrl_wrap._children.index(self.undo_button)
+                self._ctrl_wrap._children.insert(
+                    idx, self.mark_rep_boundary_button
+                )
+            self.mark_rep_boundary_button.config(
+                state="normal" if can_mark_boundary else "disabled",
+                text=(
+                    "Mark rep end"
+                    if self.awaiting_rep_end
+                    else "Mark rep start"
+                ),
+            )
+
+        elif self.annotation_mode in ("manual", "flexible"):
             for btn in manual_btns:
                 if btn not in self._ctrl_wrap._children:
                     idx = self._ctrl_wrap._children.index(self.undo_button)
                     self._ctrl_wrap._children.insert(idx, btn)
-        else:
-            # Hide all manual buttons
             for btn in manual_btns:
-                if btn in self._ctrl_wrap._children:
-                    self._ctrl_wrap._children.remove(btn)
-                btn.place_forget()
-            # Ensure mark_button is in the wrap list before undo
-            if self.mark_button not in self._ctrl_wrap._children:
-                idx = self._ctrl_wrap._children.index(self.undo_button)
-                self._ctrl_wrap._children.insert(idx, self.mark_button)
+                btn.config(state="normal" if can_mark_manual else "disabled")
 
-        # Configure button states
-        self.mark_button.config(
-            state="normal" if can_mark else "disabled"
-        )
-        self.mark_prep_button.config(
-            state="normal" if has_video else "disabled"
-        )
-        self.mark_rep_button.config(
-            state="normal" if has_video else "disabled"
-        )
-        self.mark_norep_button.config(
-            state="normal" if has_video else "disabled"
-        )
-        self.mark_finish_button.config(
-            state="normal" if has_video else "disabled"
-        )
         self.undo_button.config(
             state="normal" if has_segments else "disabled"
         )
@@ -1975,6 +2281,8 @@ class VideoPoseLabellerApp:
         self.binary_label = ""  # stays empty until "finish" is marked
         self.state_sequence = []
         self.recorded_segments = []
+        self.awaiting_rep_end  = False
+        self.current_rep_start = None
         self._undo_stack.clear()
         self._redo_stack.clear()
         self.sample_json_paths = []
@@ -1998,8 +2306,7 @@ class VideoPoseLabellerApp:
         )
 
     def mark_manual_segment(self, label: str) -> None:
-        if not self.new_video_mode:
-            return
+        """Mark a segment in Manual Windowing or Flexible Binary Labels mode."""
         if not self.capture:
             messagebox.showwarning("No video", "Please load a video first.")
             return
@@ -2013,13 +2320,16 @@ class VideoPoseLabellerApp:
                 "Invalid segment", "End frame must be after start frame."
             )
             return
-        self._push_undo()   # ← snapshot before change
+        self._push_undo()
         new_segment = Segment(start_frame, end_frame, label)
         self.recorded_segments.append(new_segment)
         self._update_annotation_view()
         self._refresh_binary_label_display()
         self._update_buttons()
-        self.status_var.set(f"Added {label} segment: {start_frame}-{end_frame}")
+        self._refresh_state_ui()
+        self.status_var.set(
+            f"Added {label} segment: {start_frame}–{end_frame}"
+        )
         self._mark_unsaved()
         if label == "finish":
             self._derive_binary_from_segments()
