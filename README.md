@@ -99,7 +99,7 @@ project_root/
 1. Use video controls to navigate:
    - **Play/Pause**: Start/stop video playback
    - **Realtime Playback/Pause**: Start/stop realtime video playback
-   -**Playback speed**: Play/Pause button video playback speed
+   - **Playback speed**: Play/Pause button video playback speed
    - **Frame buttons**: Step forward/backward by single frames
    - **Slider**: Jump to specific frames
 
