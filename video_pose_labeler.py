@@ -1412,7 +1412,7 @@ class VideoPoseLabellerApp:
         if self._rt_after_id is not None:
             self.root.after_cancel(self._rt_after_id)
             self._rt_after_id = None
-            
+
     def _on_speed_changed(self, event=None) -> None:
         """Update playback speed from the speed selector combobox."""
         val = self.speed_var.get().replace("x", "")
@@ -2608,9 +2608,9 @@ class VideoPoseLabellerApp:
         if not dialog.result:
             return
 
-        new_person, new_angle = dialog.result
-        new_sample      = f"{exercise}_{new_person}_{new_angle}"
-        new_video_name  = f"{new_sample}.mp4"
+        angle_person, rep_norep = dialog.result
+        new_sample     = f"{exercise}_{angle_person}_{rep_norep}"
+        new_video_name = f"{new_sample}.mp4"
 
         if new_sample == old_sample:
             messagebox.showinfo("No change", "The new name is the same as the old name.")
@@ -2837,8 +2837,8 @@ class VideoPoseLabellerApp:
         naming_dialog = VideoNamingDialog(self.root)
         if not naming_dialog.result:
             return
-        exercise, person, angle = naming_dialog.result
-        new_video_name = f"{exercise}_{person}_{angle}.mp4"
+        exercise, angle_person, rep_norep = naming_dialog.result
+        new_video_name = f"{exercise}_{angle_person}_{rep_norep}.mp4"
         if self.json_root:
             dataset_root = self.json_root.parent
         else:
@@ -2853,7 +2853,7 @@ class VideoPoseLabellerApp:
             dataset_root
             / "json_keypoints"
             / exercise
-            / f"{exercise}_{person}_{angle}"
+            / f"{exercise}_{angle_person}_{rep_norep}"
         )
         try:
             json_dir.mkdir(parents=True, exist_ok=True)
@@ -2862,19 +2862,24 @@ class VideoPoseLabellerApp:
             json_data = {
                 "video_path": f"CFRep/CFRep/{new_video_name}",
                 "dataset_type": "CocoDataset",
-                "exercise_type": exercise.upper().replace("_", "_"),
+                "exercise_type": exercise.upper(),
                 "binary_label": self.binary_label,
                 "frames": [],
-                "annotations": [seg.as_dict() for seg in self.recorded_segments],
+                "annotations": [
+                    seg.as_dict() for seg in self.recorded_segments
+                ],
             }
-            json_path = json_dir / f"{exercise}_{person}_{angle}_minimal.json"
+            json_path = (
+                json_dir
+                / f"{exercise}_{angle_person}_{rep_norep}_minimal.json"
+            )
             with json_path.open("w", encoding="utf-8") as f:
                 json.dump(json_data, f, indent=2)
             self._update_video_configs(new_video_name, exercise, json_data)
             messagebox.showinfo(
                 "Save successful",
                 f"Video saved as: {new_video_name}\n"
-                f"JSON created: {json_path.name}\n"
+                f"JSON created:   {json_path.name}\n"
                 f"Video configs updated.",
             )
             self._mark_saved()
@@ -3452,10 +3457,7 @@ class WrapFrame(tk.Frame):
         self.configure(height=total_height)
         
 class SampleRenameDialog:
-    """Dialog for renaming an existing sample.
-    Collects a new person identifier and camera angle/ID.
-    The exercise name is fixed and shown read-only for context.
-    """
+    """Dialog for renaming an existing sample."""
 
     def __init__(self, parent, exercise: str, old_sample: str):
         self.result = None
@@ -3483,7 +3485,7 @@ class SampleRenameDialog:
             font=("TkDefaultFont", 11, "bold"),
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
-        # Current name (read-only info)
+        # Current name (read-only)
         ttk.Label(main, text="Current name:").grid(
             row=1, column=0, sticky="w", pady=3
         )
@@ -3499,23 +3501,31 @@ class SampleRenameDialog:
             main, text=exercise, foreground="#666"
         ).grid(row=2, column=1, sticky="w", padx=(10, 0), pady=3)
 
-        # New person identifier
-        ttk.Label(main, text="New person ID:").grid(
+        # New angle_personID
+        ttk.Label(main, text="New angle_personID:").grid(
             row=3, column=0, sticky="w", pady=3
         )
-        self.person_var = tk.StringVar()
-        person_entry = ttk.Entry(main, textvariable=self.person_var, width=22)
-        person_entry.grid(row=3, column=1, sticky="ew", padx=(10, 0), pady=3)
+        self.angle_person_var = tk.StringVar()
+        angle_person_entry = ttk.Entry(
+            main, textvariable=self.angle_person_var, width=22
+        )
+        angle_person_entry.grid(
+            row=3, column=1, sticky="ew", padx=(10, 0), pady=3
+        )
 
-        # New camera angle/ID
-        ttk.Label(main, text="New angle/ID:").grid(
+        # New rep_norep
+        ttk.Label(main, text="New rep_norep:").grid(
             row=4, column=0, sticky="w", pady=3
         )
-        self.angle_var = tk.StringVar()
-        angle_entry = ttk.Entry(main, textvariable=self.angle_var, width=22)
-        angle_entry.grid(row=4, column=1, sticky="ew", padx=(10, 0), pady=3)
+        self.rep_norep_var = tk.StringVar()
+        rep_norep_entry = ttk.Entry(
+            main, textvariable=self.rep_norep_var, width=22
+        )
+        rep_norep_entry.grid(
+            row=4, column=1, sticky="ew", padx=(10, 0), pady=3
+        )
 
-        # Live preview of the resulting name
+        # Live preview
         self.preview_var = tk.StringVar(value="")
         ttk.Label(
             main,
@@ -3524,11 +3534,10 @@ class SampleRenameDialog:
             font=("Courier", 9),
         ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
-        # Update preview on every keystroke
-        self.person_var.trace_add(
+        self.angle_person_var.trace_add(
             "write", lambda *_: self._update_preview(exercise)
         )
-        self.angle_var.trace_add(
+        self.rep_norep_var.trace_add(
             "write", lambda *_: self._update_preview(exercise)
         )
 
@@ -3546,33 +3555,36 @@ class SampleRenameDialog:
             command=self.dialog.destroy,
         ).grid(row=0, column=1)
 
-        person_entry.focus()
+        angle_person_entry.focus()
         self.dialog.wait_window()
 
     def _update_preview(self, exercise: str) -> None:
-        person = self.person_var.get().strip()
-        angle  = self.angle_var.get().strip()
-        if person or angle:
+        angle_person = self.angle_person_var.get().strip()
+        rep_norep    = self.rep_norep_var.get().strip()
+        if angle_person or rep_norep:
             self.preview_var.set(
-                f"New name: {exercise}_{person}_{angle}"
+                f"New name: {exercise}_{angle_person}_{rep_norep}"
             )
         else:
             self.preview_var.set("")
 
     def _ok(self, exercise: str) -> None:
-        person = self.person_var.get().strip()
-        angle  = self.angle_var.get().strip()
-        if not person:
+        angle_person = self.angle_person_var.get().strip()
+        rep_norep    = self.rep_norep_var.get().strip()
+        if not angle_person:
             messagebox.showerror(
-                "Missing input", "Please enter a person identifier."
+                "Missing input", "Please enter an angle_personID."
             )
             return
-        if not angle:
+        if not rep_norep:
             messagebox.showerror(
-                "Missing input", "Please enter a camera angle/ID."
+                "Missing input", "Please enter a rep_norep value."
             )
             return
-        for value, name in [(person, "person"), (angle, "angle")]:
+        for value, name in [
+            (angle_person, "angle_personID"),
+            (rep_norep,    "rep_norep"),
+        ]:
             if not all(c.isalnum() or c in "_-" for c in value):
                 messagebox.showerror(
                     "Invalid input",
@@ -3580,7 +3592,7 @@ class SampleRenameDialog:
                     "underscores, and hyphens."
                 )
                 return
-        self.result = (person, angle)
+        self.result = (angle_person, rep_norep)
         self.dialog.destroy()
 
 class SegmentEditDialog:
@@ -3702,16 +3714,19 @@ class VideoNamingDialog:
         self.result = None
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Video Naming")
-        self.dialog.geometry("400x300")
+        self.dialog.geometry("400x320")
         self.dialog.transient(parent)
         self.dialog.grab_set()
         self.dialog.update_idletasks()
-        x = (self.dialog.winfo_screenwidth() // 2) - (self.dialog.winfo_width() // 2)
-        y = (self.dialog.winfo_screenheight() // 2) - (self.dialog.winfo_height() // 2)
+        x = (self.dialog.winfo_screenwidth()  // 2) - 200
+        y = (self.dialog.winfo_screenheight() // 2) - 160
         self.dialog.geometry(f"+{x}+{y}")
 
         main_frame = ttk.Frame(self.dialog, padding=20)
         main_frame.grid(row=0, column=0, sticky="nsew")
+        main_frame.columnconfigure(1, weight=1)
+        self.dialog.columnconfigure(0, weight=1)
+        self.dialog.rowconfigure(0, weight=1)
 
         ttk.Label(
             main_frame,
@@ -3719,6 +3734,7 @@ class VideoNamingDialog:
             font=("TkDefaultFont", 10, "bold"),
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 15))
 
+        # Exercise type
         ttk.Label(main_frame, text="Exercise type:").grid(
             row=1, column=0, sticky="w", pady=5
         )
@@ -3734,38 +3750,55 @@ class VideoNamingDialog:
             "burpees",
             "other",
         )
-        exercise_combo.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=5)
+        exercise_combo.grid(
+            row=1, column=1, sticky="ew", padx=(10, 0), pady=5
+        )
 
-        ttk.Label(main_frame, text="Person identifier:").grid(
+        # angle_personID
+        ttk.Label(main_frame, text="angle_personID:").grid(
             row=2, column=0, sticky="w", pady=5
         )
-        self.person_var = tk.StringVar()
-        person_entry = ttk.Entry(
-            main_frame, textvariable=self.person_var, width=20
+        self.angle_person_var = tk.StringVar()
+        angle_person_entry = ttk.Entry(
+            main_frame, textvariable=self.angle_person_var, width=20
         )
-        person_entry.grid(row=2, column=1, sticky="ew", padx=(10, 0), pady=5)
+        angle_person_entry.grid(
+            row=2, column=1, sticky="ew", padx=(10, 0), pady=5
+        )
 
-        ttk.Label(main_frame, text="Camera angle/ID:").grid(
+        # rep_norep
+        ttk.Label(main_frame, text="rep_norep:").grid(
             row=3, column=0, sticky="w", pady=5
         )
-        self.angle_var = tk.StringVar()
-        angle_entry = ttk.Entry(
-            main_frame, textvariable=self.angle_var, width=20
+        self.rep_norep_var = tk.StringVar()
+        rep_norep_entry = ttk.Entry(
+            main_frame, textvariable=self.rep_norep_var, width=20
         )
-        angle_entry.grid(row=3, column=1, sticky="ew", padx=(10, 0), pady=5)
+        rep_norep_entry.grid(
+            row=3, column=1, sticky="ew", padx=(10, 0), pady=5
+        )
 
-        example_frame = ttk.LabelFrame(main_frame, text="Example", padding=10)
+        # Example frame
+        example_frame = ttk.LabelFrame(
+            main_frame, text="Example", padding=10
+        )
         example_frame.grid(
             row=4, column=0, columnspan=2, sticky="ew", pady=(20, 10)
         )
         ttk.Label(
-            example_frame, text="Exercise: double_unders", foreground="gray"
+            example_frame,
+            text="Exercise:      double_unders",
+            foreground="gray",
         ).grid(row=0, column=0, sticky="w")
         ttk.Label(
-            example_frame, text="Person: diag_m2", foreground="gray"
+            example_frame,
+            text="angle_personID: diag_m2",
+            foreground="gray",
         ).grid(row=1, column=0, sticky="w")
         ttk.Label(
-            example_frame, text="Angle: 9_7", foreground="gray"
+            example_frame,
+            text="rep_norep:      9_7",
+            foreground="gray",
         ).grid(row=2, column=0, sticky="w")
         ttk.Label(
             example_frame,
@@ -3773,6 +3806,7 @@ class VideoNamingDialog:
             foreground="blue",
         ).grid(row=3, column=0, sticky="w", pady=(5, 0))
 
+        # Buttons
         button_frame = ttk.Frame(main_frame)
         button_frame.grid(
             row=5, column=0, columnspan=2, sticky="ew", pady=(20, 0)
@@ -3785,42 +3819,41 @@ class VideoNamingDialog:
         ).grid(row=0, column=1)
 
         main_frame.columnconfigure(1, weight=1)
-        self.dialog.columnconfigure(0, weight=1)
-        self.dialog.rowconfigure(0, weight=1)
-
         exercise_combo.focus()
         self.dialog.wait_window()
 
     def ok_clicked(self):
-        exercise = self.exercise_var.get().strip()
-        person = self.person_var.get().strip()
-        angle = self.angle_var.get().strip()
+        exercise     = self.exercise_var.get().strip()
+        angle_person = self.angle_person_var.get().strip()
+        rep_norep    = self.rep_norep_var.get().strip()
         if not exercise:
-            messagebox.showerror("Missing input", "Please enter an exercise type")
-            return
-        if not person:
             messagebox.showerror(
-                "Missing input", "Please enter a person identifier"
+                "Missing input", "Please enter an exercise type."
             )
             return
-        if not angle:
+        if not angle_person:
             messagebox.showerror(
-                "Missing input", "Please enter a camera angle/ID"
+                "Missing input", "Please enter an angle_personID."
             )
             return
-        for field, name in [
-            (exercise, "exercise"),
-            (person, "person"),
-            (angle, "angle"),
+        if not rep_norep:
+            messagebox.showerror(
+                "Missing input", "Please enter a rep_norep value."
+            )
+            return
+        for value, name in [
+            (exercise,     "exercise"),
+            (angle_person, "angle_personID"),
+            (rep_norep,    "rep_norep"),
         ]:
-            if not all(c.isalnum() or c in "_-" for c in field):
+            if not all(c.isalnum() or c in "_-" for c in value):
                 messagebox.showerror(
                     "Invalid input",
-                    f"{name} must contain only letters, numbers, "
-                    "underscores, and hyphens",
+                    f"'{name}' must contain only letters, numbers, "
+                    "underscores, and hyphens."
                 )
                 return
-        self.result = (exercise, person, angle)
+        self.result = (exercise, angle_person, rep_norep)
         self.dialog.destroy()
 
     def cancel_clicked(self):
