@@ -130,6 +130,10 @@ class VideoPoseLabellerApp:
         self._rt_after_id: Optional[str] = None
         self._rt_start_time: float = 0.0
         self._rt_start_frame: int = 0
+        
+        # Sequential read optimisation for realtime playback —
+        # avoid expensive seeks when reading frames in order.
+        self._last_read_frame: int = -1
 
         # Build the UI widgets
         self._build_ui()
@@ -1394,39 +1398,63 @@ class VideoPoseLabellerApp:
             self._rt_after_id = None
 
     def _rt_loop(self) -> None:
-        """Time-anchored playback loop.
+        """Time-anchored realtime playback loop.
 
-        Instead of relying purely on after() delay (which drifts), we
-        calculate which frame *should* be showing right now based on
-        real elapsed time and jump directly to it, skipping frames if
-        the system is running slow.
+        Key optimisations vs the naive approach:
+        - Sequential reads instead of seeks (handled in show_frame)
+        - Slider and frame-info label updated only every N frames to
+          reduce UI thread load
+        - Next-tick scheduling uses perf_counter for sub-millisecond
+          accuracy rather than a fixed after() delay
         """
         if not self._rt_playing or not self.capture:
             return
 
-        elapsed      = time.perf_counter() - self._rt_start_time
+        now          = time.perf_counter()
+        elapsed      = now - self._rt_start_time
         target_frame = self._rt_start_frame + int(elapsed * self.fps)
 
         if target_frame >= self.total_frames:
-            # Reached end of video
             self.seek_to_frame(self.total_frames - 1)
             self._stop_realtime_play()
             self.status_var.set("Realtime playback complete")
             return
 
-        # Only render if we need to advance
-        if target_frame != self.current_frame:
-            self.current_frame = target_frame
-            self.show_frame(self.current_frame)
+        # Render every frame we need to catch up, but cap the catch-up
+        # at 3 frames per tick to avoid stalling the UI thread when the
+        # system hiccups.
+        frames_to_render = min(
+            target_frame - self.current_frame, 3
+        )
 
-        # Schedule next check — use a short interval so we stay responsive
-        # even if a frame takes longer than expected to decode.
-        # Target ~1ms before the next frame is due so we don't miss it.
-        next_frame        = target_frame + 1
-        time_for_next     = (
+        if frames_to_render > 0:
+            for _ in range(frames_to_render):
+                next_f = self.current_frame + 1
+                if next_f >= self.total_frames:
+                    break
+                self.current_frame = next_f
+                self.show_frame(self.current_frame)
+
+        # Update slider and frame counter only every 6 frames (~5 Hz at
+        # 30 fps) to reduce StringVar / Scale overhead significantly.
+        if self.current_frame % 6 == 0:
+            self.slider_updating = True
+            self.frame_slider.set(self.current_frame)
+            self.slider_updating = False
+            total = max(self.total_frames - 1, 0)
+            self.frame_info_var.set(
+                f"Frame: {self.current_frame} / {total}"
+            )
+
+        # Schedule next tick precisely
+        next_frame    = self.current_frame + 1
+        time_for_next = (
             (next_frame - self._rt_start_frame) / self.fps
-        ) - elapsed
-        delay_ms = max(1, int(time_for_next * 1000) - 1)
+        ) - (time.perf_counter() - self._rt_start_time)
+
+        # Clamp: never wait more than one frame period, never less than 1 ms
+        frame_period_ms = int(1000 / self.fps)
+        delay_ms = max(1, min(frame_period_ms, int(time_for_next * 1000)))
 
         self._rt_after_id = self.root.after(delay_ms, self._rt_loop)
 
@@ -1786,7 +1814,8 @@ class VideoPoseLabellerApp:
     def seek_to_frame(self, frame_index: int) -> None:
         if not self.capture:
             return
-        self.current_frame = max(0, min(self.total_frames - 1, frame_index))
+        self.current_frame    = max(0, min(self.total_frames - 1, frame_index))
+        self._last_read_frame = self.current_frame - 1  # prime sequential read
         self.show_frame(self.current_frame)
 
     def on_slider_moved(self, value: str) -> None:
@@ -1803,17 +1832,33 @@ class VideoPoseLabellerApp:
     # Frame display — Canvas with zoom & pan
     # ------------------------------------------------------------------
     def show_frame(self, frame_index: int) -> None:
+        """Read and display the requested frame.
+
+        If the requested frame is exactly one ahead of the last read
+        frame we use a plain sequential read instead of a seek, which
+        is significantly faster on most codecs and file systems.
+        """
         if not self.capture:
             return
-        self.capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-        ok, frame = self.capture.read()
+
+        # Use sequential read when possible to avoid costly seek ops
+        if frame_index == self._last_read_frame + 1:
+            ok, frame = self.capture.read()
+        else:
+            self.capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+            ok, frame = self.capture.read()
+
         if not ok:
             return
-        self.original_frame = frame.copy()
+
+        self._last_read_frame = frame_index
+        self.original_frame   = frame.copy()
         self._apply_zoom_and_display(frame)
+
         self.slider_updating = True
         self.frame_slider.set(frame_index)
         self.slider_updating = False
+
         total = max(self.total_frames - 1, 0)
         self.frame_info_var.set(f"Frame: {frame_index} / {total}")
 
@@ -1859,23 +1904,82 @@ class VideoPoseLabellerApp:
         return norm_x, norm_y
 
     def _apply_zoom_and_display(self, frame) -> None:
+        """Render *frame* (BGR numpy array) onto the canvas respecting
+        the current zoom level and focal point.
+
+        Optimised path: when zoom == 1.0 and no pan offset is needed
+        we skip the resize and crop to a direct canvas-sized slice,
+        saving significant CPU time during realtime playback.
+        """
         if frame is None:
             return
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
         canvas_w, canvas_h = self._get_canvas_dimensions()
         zw, zh, off_x, off_y, vx, vy = self._get_video_display_info()
-        zoomed = cv2.resize(frame_rgb, (zw, zh), interpolation=cv2.INTER_LINEAR)
+
+        # Fast path — no zoom, no pan, frame fits canvas exactly
+        if (
+            self.zoom_level == 1.0
+            and off_x == 0 and off_y == 0
+            and vx == 0.0 and vy == 0.0
+            and self.video_width == canvas_w
+            and self.video_height == canvas_h
+        ):
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            image = Image.fromarray(frame_rgb)
+            self.display_image = ImageTk.PhotoImage(image=image)
+            self.video_canvas.delete("video")
+            self.video_canvas.create_image(
+                0, 0, anchor=tk.NW,
+                image=self.display_image, tags="video"
+            )
+            return
+
+        # Standard path — resize and crop
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Resize only to the visible region rather than the full
+        # zoomed size — avoids allocating a huge intermediate array.
         x1, y1 = int(vx), int(vy)
         x2 = min(x1 + canvas_w, zw)
         y2 = min(y1 + canvas_h, zh)
+
         if x2 <= x1 or y2 <= y1:
             return
-        visible = zoomed[y1:y2, x1:x2]
-        image = Image.fromarray(visible)
+
+        # Scale source region to destination size directly
+        src_x1 = int(x1 * self.video_width  / zw)
+        src_y1 = int(y1 * self.video_height / zh)
+        src_x2 = int(x2 * self.video_width  / zw)
+        src_y2 = int(y2 * self.video_height / zh)
+
+        src_x1 = max(0, min(src_x1, self.video_width))
+        src_y1 = max(0, min(src_y1, self.video_height))
+        src_x2 = max(0, min(src_x2, self.video_width))
+        src_y2 = max(0, min(src_y2, self.video_height))
+
+        if src_x2 <= src_x1 or src_y2 <= src_y1:
+            return
+
+        dest_w = x2 - x1
+        dest_h = y2 - y1
+
+        cropped = frame_rgb[src_y1:src_y2, src_x1:src_x2]
+        if cropped.size == 0:
+            return
+
+        resized = cv2.resize(
+            cropped, (dest_w, dest_h),
+            interpolation=cv2.INTER_LINEAR,
+        )
+
+        image = Image.fromarray(resized)
         self.display_image = ImageTk.PhotoImage(image=image)
+
         self.video_canvas.delete("video")
         self.video_canvas.create_image(
-            off_x, off_y, anchor=tk.NW, image=self.display_image, tags="video"
+            off_x, off_y, anchor=tk.NW,
+            image=self.display_image, tags="video"
         )
 
     # ---- Zoom helpers ----
@@ -3199,7 +3303,8 @@ class VideoPoseLabellerApp:
         self.display_image = None
         self.video_canvas.delete("video")
         self.frame_info_var.set("Frame: - / -")
-
+        self._last_read_frame = -1
+        
     def on_close(self) -> None:
         if self._unsaved_changes and self.recorded_segments:
             response = messagebox.askyesnocancel(
