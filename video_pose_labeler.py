@@ -135,6 +135,9 @@ class VideoPoseLabellerApp:
         # avoid expensive seeks when reading frames in order.
         self._last_read_frame: int = -1
 
+        # Standard playback speed multiplier (1.0 = full fps, 0.5 = half, etc.)
+        self.playback_speed: float = 0.5
+
         # Build the UI widgets
         self._build_ui()
 
@@ -339,6 +342,19 @@ class VideoPoseLabellerApp:
             ttk.Button(ctrl_wrap, text="⏭", width=3,
                        command=lambda: self.step_frame(1))
         )
+
+        # Speed selector for standard playback
+        ctrl_wrap.add(ttk.Label(ctrl_wrap, text="Speed:"))
+        self.speed_var = tk.StringVar(value="0.5x")
+        speed_combo = ttk.Combobox(
+            ctrl_wrap,
+            textvariable=self.speed_var,
+            values=["0.25x", "0.5x", "0.75x", "1x", "1.5x", "2x"],
+            width=5,
+            state="readonly",
+        )
+        speed_combo.bind("<<ComboboxSelected>>", self._on_speed_changed)
+        ctrl_wrap.add(speed_combo)
 
         self.mark_button = ttk.Button(
             ctrl_wrap, text="Mark end of state",
@@ -1396,6 +1412,15 @@ class VideoPoseLabellerApp:
         if self._rt_after_id is not None:
             self.root.after_cancel(self._rt_after_id)
             self._rt_after_id = None
+            
+    def _on_speed_changed(self, event=None) -> None:
+        """Update playback speed from the speed selector combobox."""
+        val = self.speed_var.get().replace("x", "")
+        try:
+            self.playback_speed = float(val)
+        except ValueError:
+            self.playback_speed = 0.5
+        self.status_var.set(f"Playback speed set to {self.speed_var.get()}")
 
     def _rt_loop(self) -> None:
         """Time-anchored realtime playback loop.
@@ -1795,6 +1820,8 @@ class VideoPoseLabellerApp:
             self._stop_realtime_play()
 
     def _play_loop(self) -> None:
+        """Standard playback loop — honours self.playback_speed so the
+        user can watch at a comfortable sub-realtime rate."""
         if not self.playing or not self.capture:
             return
         if self.current_frame >= self.total_frames - 1:
@@ -1802,7 +1829,9 @@ class VideoPoseLabellerApp:
             return
         self.current_frame += 1
         self.show_frame(self.current_frame)
-        self.after_id = self.root.after(self.frame_delay_ms, self._play_loop)
+        # Derive delay from fps and speed multiplier — never below 15 ms
+        delay_ms = max(15, int(1000 / (self.fps * self.playback_speed)))
+        self.after_id = self.root.after(delay_ms, self._play_loop)
 
     def step_frame(self, delta: int) -> None:
         if not self.capture or self.total_frames <= 0:
@@ -3304,7 +3333,7 @@ class VideoPoseLabellerApp:
         self.video_canvas.delete("video")
         self.frame_info_var.set("Frame: - / -")
         self._last_read_frame = -1
-        
+
     def on_close(self) -> None:
         if self._unsaved_changes and self.recorded_segments:
             response = messagebox.askyesnocancel(
