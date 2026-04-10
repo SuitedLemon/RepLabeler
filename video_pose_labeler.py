@@ -3714,13 +3714,9 @@ class VideoNamingDialog:
         self.result = None
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Video Naming")
-        self.dialog.geometry("400x320")
+        self.dialog.resizable(False, False)
         self.dialog.transient(parent)
         self.dialog.grab_set()
-        self.dialog.update_idletasks()
-        x = (self.dialog.winfo_screenwidth()  // 2) - 200
-        y = (self.dialog.winfo_screenheight() // 2) - 160
-        self.dialog.geometry(f"+{x}+{y}")
 
         main_frame = ttk.Frame(self.dialog, padding=20)
         main_frame.grid(row=0, column=0, sticky="nsew")
@@ -3732,11 +3728,11 @@ class VideoNamingDialog:
             main_frame,
             text="Enter video naming information:",
             font=("TkDefaultFont", 10, "bold"),
-        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 15))
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
         # Exercise type
         ttk.Label(main_frame, text="Exercise type:").grid(
-            row=1, column=0, sticky="w", pady=5
+            row=1, column=0, sticky="w", pady=4
         )
         self.exercise_var = tk.StringVar()
         exercise_combo = ttk.Combobox(
@@ -3751,74 +3747,83 @@ class VideoNamingDialog:
             "other",
         )
         exercise_combo.grid(
-            row=1, column=1, sticky="ew", padx=(10, 0), pady=5
+            row=1, column=1, sticky="ew", padx=(10, 0), pady=4
         )
 
         # angle_personID
         ttk.Label(main_frame, text="angle_personID:").grid(
-            row=2, column=0, sticky="w", pady=5
+            row=2, column=0, sticky="w", pady=4
         )
         self.angle_person_var = tk.StringVar()
         angle_person_entry = ttk.Entry(
             main_frame, textvariable=self.angle_person_var, width=20
         )
         angle_person_entry.grid(
-            row=2, column=1, sticky="ew", padx=(10, 0), pady=5
+            row=2, column=1, sticky="ew", padx=(10, 0), pady=4
         )
 
         # rep_norep
         ttk.Label(main_frame, text="rep_norep:").grid(
-            row=3, column=0, sticky="w", pady=5
+            row=3, column=0, sticky="w", pady=4
         )
         self.rep_norep_var = tk.StringVar()
         rep_norep_entry = ttk.Entry(
             main_frame, textvariable=self.rep_norep_var, width=20
         )
         rep_norep_entry.grid(
-            row=3, column=1, sticky="ew", padx=(10, 0), pady=5
+            row=3, column=1, sticky="ew", padx=(10, 0), pady=4
         )
 
-        # Example frame
+        # Example frame — reduced padding so it doesn't push buttons off screen
         example_frame = ttk.LabelFrame(
-            main_frame, text="Example", padding=10
+            main_frame, text="Example", padding=6
         )
         example_frame.grid(
-            row=4, column=0, columnspan=2, sticky="ew", pady=(20, 10)
+            row=4, column=0, columnspan=2, sticky="ew", pady=(10, 6)
         )
-        ttk.Label(
-            example_frame,
-            text="Exercise:      double_unders",
-            foreground="gray",
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            example_frame,
-            text="angle_personID: diag_m2",
-            foreground="gray",
-        ).grid(row=1, column=0, sticky="w")
-        ttk.Label(
-            example_frame,
-            text="rep_norep:      9_7",
-            foreground="gray",
-        ).grid(row=2, column=0, sticky="w")
+        for row_idx, text in enumerate((
+            "Exercise:       double_unders",
+            "angle_personID: diag_m2",
+            "rep_norep:      9_7",
+        )):
+            ttk.Label(
+                example_frame, text=text, foreground="gray",
+            ).grid(row=row_idx, column=0, sticky="w")
+
         ttk.Label(
             example_frame,
             text="Result: double_unders_diag_m2_9_7.mp4",
             foreground="blue",
-        ).grid(row=3, column=0, sticky="w", pady=(5, 0))
+        ).grid(row=3, column=0, sticky="w", pady=(4, 0))
+
+        # Separator to visually anchor the buttons
+        ttk.Separator(main_frame, orient="horizontal").grid(
+            row=5, column=0, columnspan=2, sticky="ew", pady=(10, 0)
+        )
 
         # Buttons
         button_frame = ttk.Frame(main_frame)
         button_frame.grid(
-            row=5, column=0, columnspan=2, sticky="ew", pady=(20, 0)
+            row=6, column=0, columnspan=2, sticky="ew", pady=(8, 0)
         )
+        button_frame.columnconfigure(0, weight=1)
+        button_frame.columnconfigure(1, weight=1)
+
         ttk.Button(
             button_frame, text="OK", command=self.ok_clicked
-        ).grid(row=0, column=0, padx=(0, 5))
+        ).grid(row=0, column=0, padx=(0, 4), sticky="ew")
         ttk.Button(
             button_frame, text="Cancel", command=self.cancel_clicked
-        ).grid(row=0, column=1)
+        ).grid(row=0, column=1, padx=(4, 0), sticky="ew")
 
-        main_frame.columnconfigure(1, weight=1)
+        # Let the dialog size itself to its content, then centre it
+        self.dialog.update_idletasks()
+        w = self.dialog.winfo_reqwidth()
+        h = self.dialog.winfo_reqheight()
+        x = (self.dialog.winfo_screenwidth()  // 2) - (w // 2)
+        y = (self.dialog.winfo_screenheight() // 2) - (h // 2)
+        self.dialog.geometry(f"{w}x{h}+{x}+{y}")
+
         exercise_combo.focus()
         self.dialog.wait_window()
 
