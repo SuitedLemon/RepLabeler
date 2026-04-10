@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -123,6 +124,12 @@ class VideoPoseLabellerApp:
         self._undo_stack: list[list[Segment]] = []
         self._redo_stack: list[list[Segment]] = []
         self._last_browse_dir: Optional[str] = None
+       
+        # Realtime playback state
+        self._rt_playing: bool = False
+        self._rt_after_id: Optional[str] = None
+        self._rt_start_time: float = 0.0
+        self._rt_start_frame: int = 0
 
         # Build the UI widgets
         self._build_ui()
@@ -313,6 +320,12 @@ class VideoPoseLabellerApp:
             ctrl_wrap, text="▶", width=3, command=self.toggle_play
         )
         ctrl_wrap.add(self.play_button)
+
+        # Realtime play button — time-anchored, skips frames to stay in sync
+        self.rt_play_button = ttk.Button(
+            ctrl_wrap, text="▶▶", width=3, command=self.toggle_realtime_play
+        )
+        ctrl_wrap.add(self.rt_play_button)
 
         ctrl_wrap.add(
             ttk.Button(ctrl_wrap, text="⏮", width=3,
@@ -1350,6 +1363,73 @@ class VideoPoseLabellerApp:
             self.frame_delay_ms, self._segment_play_loop
         )
 
+    def toggle_realtime_play(self) -> None:
+        """Toggle realtime (time-anchored) playback on/off."""
+        if not self.capture:
+            return
+        if self._rt_playing:
+            self._stop_realtime_play()
+        else:
+            self._start_realtime_play()
+
+    def _start_realtime_play(self) -> None:
+        """Begin realtime playback from the current frame."""
+        if not self.capture or self.total_frames <= 0:
+            return
+        # Stop normal playback if running
+        self.pause_video()
+
+        self._rt_playing      = True
+        self._rt_start_frame  = self.current_frame
+        self._rt_start_time   = time.perf_counter()
+        self.rt_play_button.configure(text="⏸▶")
+        self._rt_loop()
+
+    def _stop_realtime_play(self) -> None:
+        """Stop realtime playback."""
+        self._rt_playing = False
+        self.rt_play_button.configure(text="▶▶")
+        if self._rt_after_id is not None:
+            self.root.after_cancel(self._rt_after_id)
+            self._rt_after_id = None
+
+    def _rt_loop(self) -> None:
+        """Time-anchored playback loop.
+
+        Instead of relying purely on after() delay (which drifts), we
+        calculate which frame *should* be showing right now based on
+        real elapsed time and jump directly to it, skipping frames if
+        the system is running slow.
+        """
+        if not self._rt_playing or not self.capture:
+            return
+
+        elapsed      = time.perf_counter() - self._rt_start_time
+        target_frame = self._rt_start_frame + int(elapsed * self.fps)
+
+        if target_frame >= self.total_frames:
+            # Reached end of video
+            self.seek_to_frame(self.total_frames - 1)
+            self._stop_realtime_play()
+            self.status_var.set("Realtime playback complete")
+            return
+
+        # Only render if we need to advance
+        if target_frame != self.current_frame:
+            self.current_frame = target_frame
+            self.show_frame(self.current_frame)
+
+        # Schedule next check — use a short interval so we stay responsive
+        # even if a frame takes longer than expected to decode.
+        # Target ~1ms before the next frame is due so we don't miss it.
+        next_frame        = target_frame + 1
+        time_for_next     = (
+            (next_frame - self._rt_start_frame) / self.fps
+        ) - elapsed
+        delay_ms = max(1, int(time_for_next * 1000) - 1)
+
+        self._rt_after_id = self.root.after(delay_ms, self._rt_loop)
+
     def edit_selected_annotation(self) -> None:
         selection = self.annotation_tree.selection()
         if not selection:
@@ -1682,6 +1762,9 @@ class VideoPoseLabellerApp:
         if self.after_id is not None:
             self.root.after_cancel(self.after_id)
             self.after_id = None
+        # Also stop realtime playback if it was running
+        if self._rt_playing:
+            self._stop_realtime_play()
 
     def _play_loop(self) -> None:
         if not self.playing or not self.capture:
@@ -2156,6 +2239,7 @@ class VideoPoseLabellerApp:
         )
 
         self.play_button.config(state="normal" if has_video else "disabled")
+        self.rt_play_button.config(state="normal" if has_video else "disabled")
 
         # Button sets for each mode
         manual_btns = [
@@ -3106,6 +3190,7 @@ class VideoPoseLabellerApp:
         if self.capture is not None:
             self.capture.release()
             self.capture = None
+        self._stop_realtime_play()
         self.current_frame = 0
         self.total_frames = 0
         self.video_width = 0
