@@ -122,7 +122,7 @@ Best for samples with a known binary label where you want to mark continuous sta
 Best for marking individual rep start and end points without needing to follow a fixed sequence order.
 
 1. Video Controls
-Same as Classic State Sequence Mode above.
+- Same as Classic State Sequence Mode above.
 
 2. Marking Rep Boundaries
 - Load a sample or open a new video
@@ -144,7 +144,7 @@ Same as Classic State Sequence Mode above.
 Best for new videos without existing pose data, or when you want full control over every segment boundary.
 
 1. Video Controls
-Same as Classic State Sequence Mode above.
+- Same as Classic State Sequence Mode above.
 
 2. Marking Segments
 - Open a new video using "Load New Video…" (or load an existing sample)
@@ -169,7 +169,7 @@ Same as Classic State Sequence Mode above.
 Best for correcting or refining existing annotations where the binary label and segments need to stay in sync as you edit.
 
 1. Video Controls
-Same as Classic State Sequence Mode above.
+- Same as Classic State Sequence Mode above.
 
 2. Marking and Editing Segments
 - Load a sample — existing annotations are loaded into the table automatically
