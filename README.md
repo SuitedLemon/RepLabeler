@@ -96,32 +96,96 @@ project_root/
 ### 4. Annotating Videos
 
 #### Classic State Sequence Mode (Default)
-1. Use video controls to navigate:
-   - **Play/Pause**: Start/stop video playback
-   - **Realtime Playback/Pause**: Start/stop realtime video playback
-   - **Playback speed**: Play/Pause button video playback speed
-   - **Frame buttons**: Step forward/backward by single frames
-   - **Slider**: Jump to specific frames
+Best for samples with a known binary label where you want to mark continuous state transitions in order.
 
-2. Mark state boundaries:
-   - Position the video at the **end** of the current state
-   - Click "Mark end of current state"
-   - Progress through: prep → rep/no-rep phases → finish
+1. Video Controls
+- Play/Pause (▶/⏸): Start/stop video playback at the selected speed
+- Realtime Playback/Pause (▶▶/⏸▶): Start/stop time-anchored realtime playback
+- Playback Speed: Adjusts the Play/Pause button speed (0.25x – 2x)
+- Frame Buttons (⏮/⏭): Step forward or backward one frame at a time
+- Slider: Jump to any frame in the video
 
-#### Rep Boundary Mode (New!)
-For precise labeling when athletes rest between reps:
+2. Marking State Boundaries
+- Load a sample — the binary label is read from the JSON file (or prompted if missing)
+- The state sequence is built automatically: prep → rep/no-rep → ... → finish
+- Navigate to the end of the current state shown in the status bar
+- Click "Mark end of state" to record the boundary and advance to the next state
+- Repeat until all states are marked — the status bar will show "All states marked. Ready to save."
+- Click Save to write annotations back to the JSON file(s)
 
-1. **Enable Rep Mode**: Check "Rep start/end mode" checkbox
-2. **Mark Each Rep**:
-   - Navigate to rep start → Click "Mark rep start"
-   - Navigate to rep end → Click "Mark rep end"
-   - If binary label exists: segment is automatically classified as rep/no-rep
-   - If no binary label: you'll be prompted to classify as rep or no-rep
-3. **Repeat** for all reps - rest periods are naturally excluded
-4. **Benefits**: 
-   - Handles incomplete reps
-   - Marks only actual rep executions
-   - Automatic rep/no-rep classification based on binary label
+3. Notes
+- The sequence display shows ✓ for completed states, → for the current state
+- Use Undo/Redo to step back and re-mark any state
+- Use Edit Selected in the annotation table to fine-tune any boundary after the fact
+
+#### Rep Boundary Mode
+Best for marking individual rep start and end points without needing to follow a fixed sequence order.
+
+1. Video Controls
+Same as Classic State Sequence Mode above.
+
+2. Marking Rep Boundaries
+- Load a sample or open a new video
+- Navigate to the start of a rep
+- Click "Mark rep start" — the button changes to "Mark rep end"
+- Navigate to the end of the same rep
+- Click "Mark rep end" — the segment is classified automatically:
+- If a binary label exists, the next unmatched bit (1 = rep, 0 = no-rep) is used
+- If no binary label exists, a dialog asks you to classify the segment manually
+- Repeat for each rep in the video
+- Click Save when done
+
+3. Notes
+- Segments are sorted by start frame automatically after each mark
+- Switching away from this mode while a rep start is marked (but no end yet) will prompt you to confirm discarding the incomplete boundary
+- You can still use Edit Selected / Delete Selected in the annotation table to correct any segment after marking
+
+#### Manual Windowing Mode
+Best for new videos without existing pose data, or when you want full control over every segment boundary.
+
+1. Video Controls
+Same as Classic State Sequence Mode above.
+
+2. Marking Segments
+- Open a new video using "Load New Video…" (or load an existing sample)
+- Navigate to the end of the first segment
+- Click the appropriate label button to close the segment from the last end point to the current frame:
+- Mark as prep — warm-up / preparation phase
+- Mark as rep — a successful repetition
+- Mark as no-rep — a failed or incomplete repetition
+- Mark as finish — end/cool-down phase
+- Each segment starts automatically where the previous one ended
+- Mark "Mark as finish" last — this locks in the binary label derived from the rep/no-rep segments
+- Click Save to name and save the video and annotations
+
+3. Notes
+- The binary label is left empty until "Mark as finish" is clicked, at which point it is derived automatically from the rep/no-rep segments in order
+- You do not need to follow any fixed order — segments can be any combination of labels
+- Use Insert Segment in the annotation table to fill any gap between existing segments
+- Use Edit Selected / Delete Selected to correct any segment after marking
+- When saving a new video you will be prompted to enter an exercise type, angle/person ID, and rep/norep identifier to name the file
+
+#### Flexible Binary Labels Mode
+Best for correcting or refining existing annotations where the binary label and segments need to stay in sync as you edit.
+
+1. Video Controls
+Same as Classic State Sequence Mode above.
+
+2. Marking and Editing Segments
+- Load a sample — existing annotations are loaded into the table automatically
+- Use any combination of the manual label buttons to add new segments:
+- Mark as prep / rep / no-rep / finish
+- The binary label display updates live as you add, edit or delete segments
+- Use Edit Selected to adjust the start frame, end frame or label of any existing segment
+- Use Delete Selected to remove a segment — the binary label recalculates immediately
+- Use Insert Segment to add a segment at any point in the timeline
+- Click Save when done
+
+3. Notes
+- The binary label stays in sync with the rep/no-rep segments at all times — you do not need to update it manually
+- Unlike Classic mode there is no enforced sequence order — you can mark or edit any segment at any time
+- Undo/Redo works across all operations including edits and deletions
+- This mode is particularly useful when a sample has a partially correct annotation that only needs a few corrections rather than a full re-mark from scratch
 
 #### Annotation Management
 - **Edit Selected**: Double-click or select annotation and click "Edit Selected"
