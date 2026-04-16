@@ -138,10 +138,13 @@ For adding completely new videos to your dataset:
 1. **Click "Load New Video..."** button
 2. **Select video file** from file browser
 3. **Choose annotation method**:
-   - Enter binary label and use state sequence mode, OR
-   - Use manual windowing buttons (Mark as prep/rep/no-rep/finish), OR
-   - Enable rep mode and mark individual reps
-4. **Save with naming**: Provide exercise type, person ID, and camera angle
+   - 'Mode' menu drop down:
+   - State Sequence mode by default, OR
+   - Enable Rep Boundary mode and mark individual reps
+   - Use Manual Windowing mode buttons (Mark as prep/rep/no-rep/finish), OR
+   - Flexible binary labels for manual labeling
+
+4. **Save with naming**: Provide exercise type, camera angle and person ID, and number of reps and no reps
 5. **Auto-organization**: Video is copied, renamed, and JSON files created automatically
 
 ### 6. Building Video Configuration
@@ -159,9 +162,9 @@ To create an aggregated registry of all labeled videos:
 - **Classic mode**: Complete all states before saving
 - **Rep mode**: Save once you've marked all desired reps
 - **New videos**: Provide naming info and files are auto-organized
-- Click "Save annotations" to write labels back to JSON files
+- Click "Save annotations" or "Save" button to write labels back to JSON files
 - Annotations are saved across all JSON files for the sample
-- Exiting application while changes have been made prompts user to save
+- Exiting application with unsaved changes will prompt user to save
 
 ## JSON Format
 
