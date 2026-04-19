@@ -106,7 +106,7 @@ Best for samples with a known binary label where you want to mark continuous sta
 - Slider: Jump to any frame in the video
 
 2. Marking State Boundaries
-- Load a sample — the binary label is read from the JSON file (or prompted if missing)
+- Load a sample — the binary label is read from the JSON file
 - The state sequence is built automatically: prep → rep/no-rep → ... → finish
 - Navigate to the end of the current state shown in the status bar
 - Click "Mark end of state" to record the boundary and advance to the next state
