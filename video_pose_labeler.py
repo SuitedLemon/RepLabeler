@@ -328,7 +328,7 @@ class VideoPoseLabellerApp:
         )
         ctrl_wrap.add(self.play_button)
 
-        # Realtime play button — time-anchored, skips frames to stay in sync
+        # Realtime play button — always 1x speed, time-anchored
         self.rt_play_button = ttk.Button(
             ctrl_wrap, text="▶▶", width=3, command=self.toggle_realtime_play
         )
@@ -344,7 +344,7 @@ class VideoPoseLabellerApp:
         )
 
         # Speed selector for standard playback
-        ctrl_wrap.add(ttk.Label(ctrl_wrap, text="Speed:"))
+        ctrl_wrap.add(ttk.Label(ctrl_wrap, text="▶ Speed:"))  # ← was just "Speed:"
         self.speed_var = tk.StringVar(value="0.5x")
         speed_combo = ttk.Combobox(
             ctrl_wrap,
@@ -1393,16 +1393,23 @@ class VideoPoseLabellerApp:
             self._start_realtime_play()
 
     def _start_realtime_play(self) -> None:
-        """Begin realtime playback from the current frame."""
         if not self.capture or self.total_frames <= 0:
             return
-        # Stop normal playback if running
+        # Stop normal playback first
         self.pause_video()
-
-        self._rt_playing      = True
-        self._rt_start_frame  = self.current_frame
-        self._rt_start_time   = time.perf_counter()
+        self._rt_playing     = True
+        self._rt_start_frame = self.current_frame
         self.rt_play_button.configure(text="⏸▶")
+        # FIX: set _rt_start_time as late as possible — immediately
+        # before the first loop tick — so elapsed never starts inflated
+        self.root.after(0, self._rt_loop_init)
+
+    def _rt_loop_init(self) -> None:
+        """Set the start time immediately before the first loop tick
+        so that pause_video() overhead does not inflate elapsed time."""
+        if not self._rt_playing:
+            return
+        self._rt_start_time = time.perf_counter()
         self._rt_loop()
 
     def _stop_realtime_play(self) -> None:
@@ -1425,59 +1432,56 @@ class VideoPoseLabellerApp:
     def _rt_loop(self) -> None:
         """Time-anchored realtime playback loop.
 
-        Key optimisations vs the naive approach:
-        - Sequential reads instead of seeks (handled in show_frame)
-        - Slider and frame-info label updated only every N frames to
-          reduce UI thread load
-        - Next-tick scheduling uses perf_counter for sub-millisecond
-          accuracy rather than a fixed after() delay
+        Always plays at true 1x speed regardless of the speed selector.
+        The speed selector only affects the normal _play_loop.
+        Use the ▶▶ button for accurate realtime preview and the ▶ button
+        for slowed-down review at a comfortable speed.
         """
         if not self._rt_playing or not self.capture:
             return
 
-        now          = time.perf_counter()
-        elapsed      = now - self._rt_start_time
-        target_frame = self._rt_start_frame + int(elapsed * self.fps)
+        now     = time.perf_counter()
+        elapsed = now - self._rt_start_time
 
-        if target_frame >= self.total_frames:
+        # FIX: use self.fps only — no playback_speed multiplier.
+        # Realtime playback is always 1x by design.
+        target_frame = self._rt_start_frame + int(elapsed * self.fps)
+        # Clamp target to valid range
+        target_frame = min(target_frame, self.total_frames - 1)
+
+        if target_frame >= self.total_frames - 1:
+            # FIX: seek explicitly to the last frame so video and
+            # slider both end at exactly the same point
             self.seek_to_frame(self.total_frames - 1)
             self._stop_realtime_play()
             self.status_var.set("Realtime playback complete")
             return
 
-        # Render every frame we need to catch up, but cap the catch-up
-        # at 3 frames per tick to avoid stalling the UI thread when the
-        # system hiccups.
-        frames_to_render = min(
-            target_frame - self.current_frame, 3
-        )
-
-        if frames_to_render > 0:
+        # FIX: only render if target is ahead of current —
+        # never let catch-up push the slider past target_frame
+        if target_frame > self.current_frame:
+            frames_to_render = min(target_frame - self.current_frame, 3)
             for _ in range(frames_to_render):
                 next_f = self.current_frame + 1
-                if next_f >= self.total_frames:
+                # FIX: never render past target_frame in a single tick
+                if next_f > target_frame or next_f >= self.total_frames:
                     break
                 self.current_frame = next_f
-                self.show_frame(self.current_frame)
+                # FIX: stop if frame could not be decoded
+                if not self.show_frame(self.current_frame):
+                    self._stop_realtime_play()
+                    self.status_var.set("Realtime playback complete")
+                    return
 
-        # Update slider and frame counter only every 6 frames (~5 Hz at
-        # 30 fps) to reduce StringVar / Scale overhead significantly.
-        if self.current_frame % 6 == 0:
-            self.slider_updating = True
-            self.frame_slider.set(self.current_frame)
-            self.slider_updating = False
-            total = max(self.total_frames - 1, 0)
-            self.frame_info_var.set(
-                f"Frame: {self.current_frame} / {total}"
-            )
+        # Removed the modulo-6 throttle — show_frame updates the slider
+        # on every frame already, so no separate update needed here
 
-        # Schedule next tick precisely
+        # Schedule next tick at true 1x speed
         next_frame    = self.current_frame + 1
         time_for_next = (
             (next_frame - self._rt_start_frame) / self.fps
         ) - (time.perf_counter() - self._rt_start_time)
 
-        # Clamp: never wait more than one frame period, never less than 1 ms
         frame_period_ms = int(1000 / self.fps)
         delay_ms = max(1, min(frame_period_ms, int(time_for_next * 1000)))
 
@@ -1751,18 +1755,91 @@ class VideoPoseLabellerApp:
             messagebox.showerror("Video error", f"Could not open video: {video_path}")
             self.capture = None
             return False
-        self.total_frames = int(self.capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
         self.fps = float(self.capture.get(cv2.CAP_PROP_FPS) or 30.0)
         if self.fps <= 1e-3:
             self.fps = 30.0
         self.frame_delay_ms = max(15, int(1000 / self.fps))
-        self.current_frame = 0
+        self.current_frame  = 0
+        self.video_width    = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH)  or 0)
+        self.video_height   = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+
+        # FIX: cv2.CAP_PROP_FRAME_COUNT is unreliable for many codecs.
+        # Get the reported count first as a fast estimate, then verify it
+        # by seeking to that position and scanning forward/backward to find
+        # the true last decodable frame.
+        reported = int(self.capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        self.total_frames = self._verify_frame_count(reported)
+
+        # Guard against configure() triggering on_slider_moved
+        self.slider_updating = True
         self.frame_slider.configure(from_=0, to=max(self.total_frames - 1, 1))
-        self.video_width = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-        self.video_height = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        self.frame_slider.set(0)
+        self.slider_updating = False
+
         self.video_canvas.delete("placeholder")
         self.reset_zoom()
         return True
+
+
+    def _verify_frame_count(self, reported: int) -> int:
+        """Find the true last decodable frame index.
+
+        Strategy:
+        1. Seek to reported-1 and try to read — if it works, reported
+        count is close enough and we scan forward from there to find
+        the real end.
+        2. If reported-1 fails, binary search backward to find the last
+        readable frame.
+        3. Always restore the capture position to frame 0 when done.
+
+        This adds a small one-time cost on video load but ensures the
+        slider range and playback loop always match the actual file.
+        """
+        if reported <= 0:
+            # No metadata at all — count every frame (slow but necessary)
+            self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            count = 0
+            while True:
+                ok, _ = self.capture.read()
+                if not ok:
+                    break
+                count += 1
+            self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            return max(count, 1)
+
+        # --- Step 1: try seeking to reported - 1 ---
+        probe = reported - 1
+        self.capture.set(cv2.CAP_PROP_POS_FRAMES, probe)
+        ok, _ = self.capture.read()
+
+        if ok:
+            # Reported count is at least correct — scan forward to find
+            # any extra frames the metadata missed
+            last_good = probe
+            for _ in range(30):       # scan up to 30 frames beyond reported
+                ok, _ = self.capture.read()
+                if not ok:
+                    break
+                last_good += 1
+            self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            return last_good + 1      # +1 because total_frames is a count
+
+        # --- Step 2: reported count is too high — binary search backward ---
+        lo, hi = 0, probe
+        last_good = 0
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            self.capture.set(cv2.CAP_PROP_POS_FRAMES, mid)
+            ok, _ = self.capture.read()
+            if ok:
+                last_good = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        return last_good + 1          # +1 because total_frames is a count
 
     def _validate_existing_annotations(
         self, primary_data: dict
@@ -1820,16 +1897,18 @@ class VideoPoseLabellerApp:
             self._stop_realtime_play()
 
     def _play_loop(self) -> None:
-        """Standard playback loop — honours self.playback_speed so the
-        user can watch at a comfortable sub-realtime rate."""
+        """Standard playback loop — honours self.playback_speed."""
         if not self.playing or not self.capture:
             return
+        # FIX: check BEFORE incrementing so we never read past the last frame
         if self.current_frame >= self.total_frames - 1:
             self.pause_video()
             return
-        self.current_frame += 1
-        self.show_frame(self.current_frame)
-        # Derive delay from fps and speed multiplier — never below 15 ms
+        next_frame = self.current_frame + 1
+        if not self.show_frame(next_frame):
+            self.pause_video()
+            return
+        self.current_frame = next_frame
         delay_ms = max(15, int(1000 / (self.fps * self.playback_speed)))
         self.after_id = self.root.after(delay_ms, self._play_loop)
 
@@ -1843,15 +1922,18 @@ class VideoPoseLabellerApp:
     def seek_to_frame(self, frame_index: int) -> None:
         if not self.capture:
             return
-        self.current_frame    = max(0, min(self.total_frames - 1, frame_index))
-        self._last_read_frame = self.current_frame - 1  # prime sequential read
+        self.current_frame = max(0, min(self.total_frames - 1, frame_index))
+        # FIX: use -2 as sentinel — can never satisfy frame_index == -2 + 1
+        # for any valid frame_index >= 0, so seek path is always taken
+        self._last_read_frame = -2
         self.show_frame(self.current_frame)
 
     def on_slider_moved(self, value: str) -> None:
         if self.slider_updating:
             return
         try:
-            frame_index = int(float(value))
+            # FIX: round instead of truncate to avoid off-by-one drift
+            frame_index = round(float(value))
         except ValueError:
             return
         self.pause_video()
@@ -1862,24 +1944,22 @@ class VideoPoseLabellerApp:
     # ------------------------------------------------------------------
     def show_frame(self, frame_index: int) -> None:
         """Read and display the requested frame.
-
-        If the requested frame is exactly one ahead of the last read
-        frame we use a plain sequential read instead of a seek, which
-        is significantly faster on most codecs and file systems.
+        Returns True if the frame was decoded successfully, False otherwise.
         """
         if not self.capture:
-            return
-
-        # Use sequential read when possible to avoid costly seek ops
-        if frame_index == self._last_read_frame + 1:
+            return False
+        
+        # Use sequential read only when we are exactly one frame ahead
+        # AND the last read was a valid frame (not a seek sentinel)
+        if self._last_read_frame >= 0 and frame_index == self._last_read_frame + 1:
             ok, frame = self.capture.read()
         else:
             self.capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
             ok, frame = self.capture.read()
 
         if not ok:
-            return
-
+            return False
+        
         self._last_read_frame = frame_index
         self.original_frame   = frame.copy()
         self._apply_zoom_and_display(frame)
@@ -1890,7 +1970,7 @@ class VideoPoseLabellerApp:
 
         total = max(self.total_frames - 1, 0)
         self.frame_info_var.set(f"Frame: {frame_index} / {total}")
-
+        return True
     # ------------------------------------------------------------------
     # Zoom & Pan — canvas-based display engine
     # ------------------------------------------------------------------
